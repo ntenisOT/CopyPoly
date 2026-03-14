@@ -130,7 +130,8 @@ async def get_crawl_progress() -> dict:
                 "status": p.status,
                 "activities": p.activities_crawled,
                 "completed_at": p.completed_at.isoformat() if p.completed_at else None,
-                "error": p.error_message[:80] if p.error_message else None,
+                "notes": p.error_message if p.status == "COMPLETE" else None,
+                "error": p.error_message[:80] if p.error_message and p.status == "ERROR" else None,
             }
             for p in recent
         ],

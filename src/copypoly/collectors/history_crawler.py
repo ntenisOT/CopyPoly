@@ -302,15 +302,141 @@ async def crawl_trader_history(
     }
 
 
+async def _verify_trader(wallet: str, name: str, crawl_result: dict) -> dict:
+    """Verify crawled data against our stored leaderboard info.
+
+    Returns verification report dict.
+    """
+    wallet_lower = wallet.lower()
+    report = {"trader": name, "wallet": wallet_lower[:12]}
+
+    try:
+        async with async_session_factory() as session:
+            from sqlalchemy import func as sqlfunc
+
+            # Our stored data stats
+            row = (await session.execute(
+                select(
+                    sqlfunc.count().label("events"),
+                    sqlfunc.count(sqlfunc.distinct(TradeHistory.asset)).label("tokens"),
+                    sqlfunc.min(TradeHistory.timestamp).label("oldest"),
+                    sqlfunc.max(TradeHistory.timestamp).label("newest"),
+                    sqlfunc.sum(TradeHistory.usdc_size).label("volume"),
+                ).where(TradeHistory.trader_wallet == wallet_lower)
+            )).one()
+
+            report["stored_events"] = row.events
+            report["unique_tokens"] = row.tokens
+            report["first_trade"] = row.oldest.isoformat() if row.oldest else None
+            report["last_trade"] = row.newest.isoformat() if row.newest else None
+            report["total_volume"] = round(float(row.volume or 0), 2)
+
+            # Compare with leaderboard data
+            from copypoly.db.models import LeaderboardSnapshot
+            lb_row = (await session.execute(
+                select(
+                    sqlfunc.max(LeaderboardSnapshot.pnl).label("pnl"),
+                    sqlfunc.max(LeaderboardSnapshot.volume).label("lb_volume"),
+                ).where(LeaderboardSnapshot.trader_wallet == wallet_lower)
+                .where(LeaderboardSnapshot.period == "all")
+            )).one()
+
+            report["leaderboard_pnl"] = round(float(lb_row.pnl or 0), 2)
+            report["leaderboard_volume"] = round(float(lb_row.lb_volume or 0), 2)
+
+            # Data integrity checks
+            report["fetched_eq_stored"] = crawl_result["fetched"] == row.events
+            report["verified"] = True
+
+        log.info("trader_verified", **report)
+
+    except Exception as e:
+        report["verified"] = False
+        report["error"] = str(e)[:200]
+        log.warning("verification_failed", trader=name, error=str(e)[:100])
+
+    return report
+
+
+async def _crawl_worker(
+    semaphore: asyncio.Semaphore,
+    wallet: str,
+    username: str,
+    worker_id: int,
+    n: int,
+    total: int,
+    client: httpx.AsyncClient,
+    stats: dict,
+    stats_lock: asyncio.Lock,
+) -> None:
+    """Worker that crawls one trader with semaphore-controlled concurrency."""
+    name = username or wallet[:10]
+
+    async with semaphore:
+        log.info(
+            "crawling_trader",
+            worker=worker_id,
+            n=n,
+            total=total,
+            trader=name,
+            wallet=wallet[:12],
+        )
+
+        try:
+            result = await crawl_trader_history(wallet, client, name)
+
+            # Verify data after crawl
+            verification = await _verify_trader(wallet, name, result)
+
+            # Store verification notes in crawl_progress
+            notes = (
+                f"events={verification.get('stored_events', '?')}, "
+                f"tokens={verification.get('unique_tokens', '?')}, "
+                f"volume=${verification.get('total_volume', 0):,.0f}, "
+                f"lb_pnl=${verification.get('leaderboard_pnl', 0):,.0f}, "
+                f"match={'YES' if verification.get('fetched_eq_stored') else 'NO'}"
+            )
+            async with async_session_factory() as session:
+                await session.execute(
+                    update(CrawlProgress)
+                    .where(CrawlProgress.trader_wallet == wallet.lower())
+                    .values(error_message=notes)  # reuse field for notes when COMPLETE
+                )
+                await session.commit()
+
+            async with stats_lock:
+                stats["completed"] += 1
+                stats["total_activities"] += result["fetched"]
+                stats["total_inserted"] += result["inserted"]
+
+            log.info(
+                "trader_crawled",
+                worker=worker_id,
+                trader=name,
+                n=n,
+                fetched=result["fetched"],
+                inserted=result["inserted"],
+                verified=verification.get("fetched_eq_stored", False),
+            )
+        except Exception as e:
+            async with stats_lock:
+                stats["failed"] += 1
+            log.error("trader_crawl_failed", worker=worker_id, trader=name, error=str(e))
+
+
 async def crawl_all_history(
     top_n: int = 500,
     skip_complete: bool = True,
+    max_workers: int = 10,
 ) -> dict[str, Any]:
     """Crawl trade history for the top N traders via subgraph.
+
+    Runs up to max_workers traders in PARALLEL for speed.
 
     Args:
         top_n: Number of top traders to crawl
         skip_complete: Skip traders already marked COMPLETE
+        max_workers: Number of parallel crawl workers (default: 10)
     """
     async with async_session_factory() as session:
         result = await session.execute(
@@ -328,7 +454,12 @@ async def crawl_all_history(
             complete_set = set(complete)
             traders = [t for t in traders if t.wallet.lower() not in complete_set]
 
-    log.info("crawl_starting", total_traders=len(traders), source="subgraph")
+    log.info(
+        "crawl_starting",
+        total_traders=len(traders),
+        max_workers=max_workers,
+        source="subgraph",
+    )
 
     stats = {
         "total_traders": len(traders),
@@ -337,36 +468,26 @@ async def crawl_all_history(
         "total_activities": 0,
         "total_inserted": 0,
     }
+    stats_lock = asyncio.Lock()
+    semaphore = asyncio.Semaphore(max_workers)
 
     async with httpx.AsyncClient() as client:
-        for i, (wallet, username) in enumerate(traders):
-            name = username or wallet[:10]
-            log.info(
-                "crawling_trader",
+        tasks = [
+            _crawl_worker(
+                semaphore=semaphore,
+                wallet=wallet,
+                username=username or "",
+                worker_id=(i % max_workers) + 1,
                 n=i + 1,
                 total=len(traders),
-                trader=name,
-                wallet=wallet[:12],
+                client=client,
+                stats=stats,
+                stats_lock=stats_lock,
             )
-
-            try:
-                result = await crawl_trader_history(wallet, client, name)
-                stats["completed"] += 1
-                stats["total_activities"] += result["fetched"]
-                stats["total_inserted"] += result["inserted"]
-                log.info(
-                    "trader_crawled",
-                    trader=name,
-                    n=i + 1,
-                    fetched=result["fetched"],
-                    inserted=result["inserted"],
-                )
-            except Exception as e:
-                stats["failed"] += 1
-                log.error("trader_crawl_failed", trader=name, error=str(e))
-
-            # Small pause between traders
-            await asyncio.sleep(0.2)
+            for i, (wallet, username) in enumerate(traders)
+        ]
+        await asyncio.gather(*tasks)
 
     log.info("crawl_complete", **stats)
     return stats
+
