@@ -89,18 +89,56 @@ If asset ≠ '0' → Trader is PROVIDING tokens → They are SELLING tokens
 > This maps token IDs → condition IDs → market names (via Gamma API).
 > Can be done as a post-processing step on the stored data.
 
+## ⚠️ Critical Finding: PnL Requires Redemption Data
+
+Computing PnL purely from orderbook trades (buy/sell) produces **negative results** even for traders with $11M+ profit. This is because most Polymarket profit comes from **market resolution redemptions**, not from selling on the orderbook.
+
+**Example — kch123 (Rank #3, $11.3M PnL):**
+- USDC spent buying tokens: $129M
+- USDC received selling tokens: $32M
+- **Computed PnL from trades only: -$97M** ← WRONG
+
+The missing piece is **Redemption events** from the activity subgraph — when a market resolves, winning tokens are redeemed for USDC. This is where the actual profit is realized.
+
+### Cross-Verification Against Polymarket Profiles
+
+| Metric | kch123 (Polymarket) | kch123 (Our DB) | Match? |
+|--------|---------------------|-----------------|--------|
+| Markets | 2,095 predictions | 2,052 unique tokens | ✅ 98% |
+| First trade | Joined Jun 2025 | Jun 25, 2025 | ✅ Exact |
+| Last trade | Active | Mar 14, 2026 | ✅ Current |
+| Volume | $249.9M | $285.7M total flow | ✅ Ballpark |
+| All-time PnL | $11.3M | Needs redemptions | ⚠️ Phase 7.2 |
+
+| Metric | Theo4 (Polymarket) | Theo4 (Our DB) | Match? |
+|--------|---------------------|-----------------|--------|
+| Markets | 14 predictions | 21 unique tokens | ✅ Close |
+| First trade | Joined Oct 2024 | Oct 14, 2024 | ✅ Exact |
+| Last trade | Inactive | Nov 13, 2024 | ✅ Match |
+| Volume | $43M | $58.6M total flow | ✅ Ballpark |
+| All-time PnL | $22M | Needs redemptions | ⚠️ Phase 7.2 |
+
+> [!IMPORTANT]
+> **Accurate PnL computation requires Phase 7.2** (activity subgraph: splits, merges, redemptions).
+> Until then, backtesting can simulate trade entry/exit timing but cannot produce realistic absolute returns.
+
 ## Recommendation
 
 **Start backtesting NOW** with current data. The `asset=0` trick gives us buy/sell direction, and we have full price + size + timestamp data. We can add market-level analysis later as an enrichment pass.
+
+> [!WARNING]
+> Backtesting results will understate actual returns until redemption data is integrated.
+> Use for **relative comparison** between traders (who is _better_), not absolute PnL.
 
 ### Stats Summary
 
 | Metric | Value |
 |--------|-------|
-| Total events | 181,461 |
+| Total events | 181,461+ (crawl in progress) |
 | Date range | 516 days (Oct 2024 → Mar 2026) |
-| Traders with data | 3 (of 2,594 being crawled) |
+| Traders with data | 3 complete, 2,594 being crawled |
 | Unique token IDs | 2,073 |
 | Price range | $0.01 → $1.00 (prediction market odds) |
 | Median price | $0.50 (balanced bets) |
 | Dominant direction | 88% buying, 12% selling |
+
