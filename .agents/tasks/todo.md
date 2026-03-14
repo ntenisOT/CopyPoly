@@ -26,9 +26,9 @@
 
 ## Phase 5: Dashboard
 
-- [ ] 5.1 FastAPI REST API
-- [ ] 5.2 React + shadcn/ui frontend
-- [ ] 5.3 TradingView charts
+- [x] 5.1 FastAPI REST API (12 endpoints: overview, traders, positions, signals, config CRUD, backtest trigger)
+- [x] 5.2 SPA Frontend (dark theme, 6 pages: overview, traders, positions, signals, backtest, settings)
+- [ ] 5.3 TradingView charts (deferred — needs more time-series data)
 
 ## Phase 6: Testing & Deployment
 

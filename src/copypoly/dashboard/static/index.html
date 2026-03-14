@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CopyPoly — Polymarket Copy Trading Dashboard</title>
+    <meta name="description" content="Real-time Polymarket copy trading dashboard with trader scoring, position monitoring, and paper trading.">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Sidebar -->
+    <nav class="sidebar" id="sidebar">
+        <div class="sidebar-brand">
+            <div class="brand-icon">◆</div>
+            <span class="brand-text">CopyPoly</span>
+        </div>
+        <ul class="nav-links">
+            <li><a href="#" class="nav-link active" data-page="overview" id="nav-overview">
+                <span class="nav-icon">📊</span> Overview
+            </a></li>
+            <li><a href="#" class="nav-link" data-page="traders" id="nav-traders">
+                <span class="nav-icon">👥</span> Traders
+            </a></li>
+            <li><a href="#" class="nav-link" data-page="positions" id="nav-positions">
+                <span class="nav-icon">📈</span> Positions
+            </a></li>
+            <li><a href="#" class="nav-link" data-page="signals" id="nav-signals">
+                <span class="nav-icon">⚡</span> Signals
+            </a></li>
+            <li><a href="#" class="nav-link" data-page="backtest" id="nav-backtest">
+                <span class="nav-icon">🔬</span> Backtest
+            </a></li>
+            <li><a href="#" class="nav-link" data-page="config" id="nav-config">
+                <span class="nav-icon">⚙️</span> Settings
+            </a></li>
+        </ul>
+        <div class="sidebar-footer">
+            <div class="mode-badge" id="trading-mode">PAPER</div>
+            <div class="version">v0.1.0</div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content" id="main-content">
+        <!-- Overview Page -->
+        <section class="page active" id="page-overview">
+            <div class="page-header">
+                <h1>Dashboard Overview</h1>
+                <div class="header-actions">
+                    <button class="btn btn-sm btn-secondary" onclick="refreshAll()" id="btn-refresh">↻ Refresh</button>
+                    <button class="btn btn-sm btn-primary" onclick="triggerCollect()" id="btn-collect">📡 Collect</button>
+                    <button class="btn btn-sm btn-accent" onclick="triggerScore()" id="btn-score">🎯 Score</button>
+                </div>
+            </div>
+            <div class="stats-grid" id="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Traders Tracked</div>
+                    <div class="stat-value" id="stat-traders">—</div>
+                </div>
+                <div class="stat-card highlight">
+                    <div class="stat-label">Watched</div>
+                    <div class="stat-value" id="stat-watched">—</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Open Positions</div>
+                    <div class="stat-value" id="stat-positions">—</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Signals</div>
+                    <div class="stat-value" id="stat-signals">—</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Paper Orders</div>
+                    <div class="stat-value" id="stat-orders">—</div>
+                </div>
+                <div class="stat-card accent">
+                    <div class="stat-label">Trading Mode</div>
+                    <div class="stat-value" id="stat-mode">—</div>
+                </div>
+            </div>
+
+            <div class="section-title">Watched Traders</div>
+            <div class="table-container">
+                <table class="data-table" id="watched-table">
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Trader</th>
+                            <th>Score</th>
+                            <th>PnL (All)</th>
+                            <th>PnL (Month)</th>
+                            <th>Win Rate</th>
+                            <th>Positions</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="watched-tbody"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Traders Page -->
+        <section class="page" id="page-traders">
+            <div class="page-header">
+                <h1>All Traders</h1>
+                <div class="header-actions">
+                    <label class="toggle-label">
+                        <input type="checkbox" id="watched-only-toggle" onchange="loadTraders()"> Watched only
+                    </label>
+                </div>
+            </div>
+            <div class="table-container">
+                <table class="data-table" id="traders-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Trader</th>
+                            <th>Score</th>
+                            <th>PnL (All Time)</th>
+                            <th>PnL (Monthly)</th>
+                            <th>PnL (Weekly)</th>
+                            <th>PnL (Daily)</th>
+                            <th>Positions</th>
+                            <th>Watched</th>
+                        </tr>
+                    </thead>
+                    <tbody id="traders-tbody"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Positions Page -->
+        <section class="page" id="page-positions">
+            <div class="page-header">
+                <h1>Open Positions</h1>
+                <div class="header-actions">
+                    <span class="position-count" id="position-count">0 positions</span>
+                </div>
+            </div>
+            <div class="table-container">
+                <table class="data-table" id="positions-table">
+                    <thead>
+                        <tr>
+                            <th>Trader</th>
+                            <th>Market</th>
+                            <th>Outcome</th>
+                            <th>Size</th>
+                            <th>Entry Price</th>
+                            <th>Current Value</th>
+                            <th>Detected</th>
+                        </tr>
+                    </thead>
+                    <tbody id="positions-tbody"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Signals Page -->
+        <section class="page" id="page-signals">
+            <div class="page-header">
+                <h1>Copy Signals</h1>
+            </div>
+            <div class="table-container">
+                <table class="data-table" id="signals-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Trader</th>
+                            <th>Type</th>
+                            <th>Outcome</th>
+                            <th>Size Change</th>
+                            <th>Price</th>
+                            <th>Status</th>
+                            <th>Time</th>
+                        </tr>
+                    </thead>
+                    <tbody id="signals-tbody"></tbody>
+                </table>
+                <div class="empty-state" id="signals-empty">No signals detected yet. Signals appear when watched trader positions change.</div>
+            </div>
+        </section>
+
+        <!-- Backtest Page -->
+        <section class="page" id="page-backtest">
+            <div class="page-header">
+                <h1>Backtesting</h1>
+            </div>
+            <div class="backtest-config">
+                <div class="config-row">
+                    <div class="config-field">
+                        <label>Traders to Test</label>
+                        <input type="number" id="bt-n-traders" value="5" min="1" max="20">
+                    </div>
+                    <div class="config-field">
+                        <label>Starting Capital ($)</label>
+                        <input type="number" id="bt-capital" value="5000" min="100" max="100000">
+                    </div>
+                    <div class="config-field">
+                        <label>Slippage (bps)</label>
+                        <input type="number" id="bt-slippage" value="100" min="0" max="500">
+                    </div>
+                    <div class="config-field">
+                        <button class="btn btn-primary btn-lg" onclick="runBacktest()" id="btn-backtest">🔬 Run Backtest</button>
+                    </div>
+                </div>
+            </div>
+            <div id="backtest-results" class="backtest-results hidden">
+                <div class="section-title">Results</div>
+                <div class="table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Trader</th>
+                                <th>Trades</th>
+                                <th>Days</th>
+                                <th>PnL ($)</th>
+                                <th>ROI %</th>
+                                <th>Daily %</th>
+                                <th>Win Rate</th>
+                                <th>Slippage</th>
+                            </tr>
+                        </thead>
+                        <tbody id="backtest-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div id="backtest-loading" class="loading-state hidden">
+                <div class="spinner"></div>
+                <p>Running backtest... This may take 30-60 seconds.</p>
+            </div>
+        </section>
+
+        <!-- Config Page -->
+        <section class="page" id="page-config">
+            <div class="page-header">
+                <h1>Configuration</h1>
+                <div class="header-actions">
+                    <button class="btn btn-sm btn-secondary" onclick="loadConfig()" id="btn-reload-config">↻ Reload</button>
+                </div>
+            </div>
+            <div class="config-grid" id="config-grid"></div>
+        </section>
+    </main>
+
+    <!-- Toast notifications -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

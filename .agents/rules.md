@@ -75,6 +75,21 @@
 - Use `SecretStr` for any private keys or tokens — never log secrets
 - Every new table needs an Alembic migration — never raw SQL schema changes
 
+### File Size & Modularity Rules
+- **Max 200 lines per Python file.** If a file exceeds 200 lines, refactor into sub-modules.
+- **Max 300 lines per HTML/JS/CSS file.** Split into components or partials if larger.
+- **One concern per file.** A file should have a single, clear responsibility.
+- **Package per feature.** Each feature gets its own package (directory with `__init__.py`):
+  - `copypoly.api` — API clients
+  - `copypoly.analysis` — Scoring, backtesting, conflict resolution
+  - `copypoly.collectors` — Data collection jobs
+  - `copypoly.engine` — Copy trading signal detection + execution
+  - `copypoly.dashboard` — REST API + frontend
+  - `copypoly.db` — Models, session, migrations
+- **Shared types in `__init__.py`** — Package-level exports and shared dataclasses.
+- **No god objects.** Split large classes into composable smaller ones.
+- **Flat is better than nested.** Max 2 levels of sub-packages.
+
 ### Git Workflow
 - Commit after each implementation step with descriptive messages
 - Format: `feat:`, `fix:`, `refactor:`, `docs:`, `chore:`

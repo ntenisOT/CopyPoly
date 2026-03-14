@@ -64,14 +64,22 @@ async def run() -> None:
     scheduler = create_scheduler()
     scheduler.start()
 
-    log.info("copypoly_ready", mode=settings.trading_mode.value)
+    # Start the dashboard server (runs in background)
+    import uvicorn
+    from copypoly.dashboard.app import dashboard_app
 
-    # TODO: Phase 3   — Start analysis engine
-    # TODO: Phase 4   — Start copy trading engine
-    # TODO: Phase 5   — Start FastAPI dashboard
+    config = uvicorn.Config(
+        dashboard_app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="warning",
+    )
+    server = uvicorn.Server(config)
 
-    # Keep running until shutdown signal
-    await _shutdown_event.wait()
+    log.info("copypoly_ready", mode=settings.trading_mode.value, dashboard="http://0.0.0.0:8000")
+
+    # Run dashboard server (this blocks until shutdown)
+    await server.serve()
 
     # Cleanup
     log.info("shutting_down")
