@@ -315,7 +315,7 @@ async def crawl_all_history(
     async with async_session_factory() as session:
         result = await session.execute(
             select(Trader.wallet, Trader.username)
-            .order_by(Trader.composite_score.desc())
+            .order_by(Trader.composite_score.desc().nulls_last())
             .limit(top_n)
         )
         traders = result.all()

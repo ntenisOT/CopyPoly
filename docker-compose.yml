@@ -56,6 +56,7 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql+asyncpg://copypoly:copypoly@db:5432/copypoly
+      DISABLE_SCHEDULER: "true"  # Backfill mode — no background jobs
     ports:
       - "8000:8000"  # FastAPI dashboard API
     depends_on:

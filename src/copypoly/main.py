@@ -58,11 +58,15 @@ async def run() -> None:
         market_interval=f"{settings.market_sync_interval_minutes}m",
     )
 
-    # Initialize and start the data collection scheduler
-    from copypoly.collectors.scheduler import create_scheduler
+    # Initialize and start the data collection scheduler (unless disabled)
+    import os
+    if os.getenv("DISABLE_SCHEDULER", "").lower() not in ("1", "true", "yes"):
+        from copypoly.collectors.scheduler import create_scheduler
 
-    scheduler = create_scheduler()
-    scheduler.start()
+        scheduler = create_scheduler()
+        scheduler.start()
+    else:
+        log.info("scheduler_disabled", reason="DISABLE_SCHEDULER env var set")
 
     # Start the dashboard server (runs in background)
     import uvicorn

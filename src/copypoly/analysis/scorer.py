@@ -43,7 +43,7 @@ DEFAULT_WEIGHTS = {
 # Eligibility Filters (defaults, overrideable via app_config)
 # ----------------------------------------------------------------
 DEFAULT_FILTERS = {
-    "min_pnl": 1000.0,            # Minimum all-time PnL ($)
+    "min_pnl": -1e18,              # No PnL filter — score everyone (gems may have low all-time PnL)
     "min_trades": 0,               # Minimum total trades (relaxed until we crawl trade history)
     "min_periods": 1,              # Must appear in at least 1 leaderboard period
     "min_volume": 0.0,             # Minimum total volume (relaxed: some traders have 0 vol on daily)
