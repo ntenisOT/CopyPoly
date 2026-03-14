@@ -1,0 +1,80 @@
+[project]
+name = "copypoly"
+version = "0.1.0"
+description = "Polymarket copy-trading system — discover, score, and copy the best traders"
+requires-python = ">=3.13"
+readme = "README.md"
+license = { text = "MIT" }
+
+dependencies = [
+    "py-clob-client>=0.34",
+    "httpx>=0.28",
+    "websockets>=14.0",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.30",
+    "psycopg2-binary>=2.9",
+    "alembic>=1.15",
+    "pydantic>=2.12",
+    "pydantic-settings>=2.13",
+    "apscheduler>=3.11",
+    "structlog>=25.1",
+    "tenacity>=9.1",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "numpy>=2.2",
+    "pandas>=2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.11",
+    "mypy>=1.15",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "pytest-cov>=6.1",
+    "pre-commit>=4.2",
+]
+
+[project.scripts]
+copypoly = "copypoly.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/copypoly"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+    "RUF",  # ruff-specific
+]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["copypoly"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

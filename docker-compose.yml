@@ -1,0 +1,73 @@
+# ============================================
+# CopyPoly — Docker Compose
+# 
+# Destroy everything:  docker compose down -v
+# Recreate everything: docker compose up --build
+# ============================================
+
+services:
+  # ------------------------------------------
+  # PostgreSQL Database
+  # ------------------------------------------
+  db:
+    image: postgres:18-alpine
+    container_name: copypoly-db
+    environment:
+      POSTGRES_USER: copypoly
+      POSTGRES_PASSWORD: copypoly
+      POSTGRES_DB: copypoly
+    ports:
+      - "5433:5432"  # 5433 host to avoid conflicts with local PG
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U copypoly -d copypoly"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ------------------------------------------
+  # Alembic Migrations (run-once, then exit)
+  # This ensures DB schema is always up-to-date
+  # ------------------------------------------
+  migrations:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: copypoly-migrations
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://copypoly:copypoly@db:5432/copypoly
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  # ------------------------------------------
+  # CopyPoly Application
+  # ------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: copypoly-app
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://copypoly:copypoly@db:5432/copypoly
+    ports:
+      - "8000:8000"  # FastAPI dashboard API
+    depends_on:
+      db:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    volumes:
+      # Mount source for hot-reload during development
+      - ./src:/app/src:ro
+
+volumes:
+  pgdata:
+    name: copypoly-pgdata
