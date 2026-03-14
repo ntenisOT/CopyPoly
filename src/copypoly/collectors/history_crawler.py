@@ -470,24 +470,36 @@ async def _verify_trader(wallet: str, name: str, crawl_result: dict) -> dict:
             net_cashflow = float(sell_usdc) + float(redeem_usdc) + float(reward_usdc) - float(buy_usdc) - float(merge_usdc)
             report["net_cashflow"] = round(net_cashflow, 2)
 
-            # Compare with leaderboard PnL
+            # Compare with leaderboard PnL + Volume
             from copypoly.db.models import LeaderboardSnapshot
             lb_row = (await session.execute(
                 select(
                     sqlfunc.max(LeaderboardSnapshot.pnl).label("pnl"),
+                    sqlfunc.max(LeaderboardSnapshot.volume).label("volume"),
                 ).where(LeaderboardSnapshot.trader_wallet == wallet_lower)
                 .where(LeaderboardSnapshot.period == "all")
             )).one()
 
             lb_pnl = float(lb_row.pnl or 0)
+            lb_vol = float(lb_row.volume or 0)
+            implied_deposit = net_cashflow - lb_pnl
+
             report["leaderboard_pnl"] = round(lb_pnl, 0)
-            report["implied_deposit"] = round(net_cashflow - lb_pnl, 0)
+            report["leaderboard_volume"] = round(lb_vol, 0)
+            report["implied_deposit"] = round(implied_deposit, 0)
+
+            # Sanity: deposit should be positive (trader put money in)
+            # and less than net_cashflow (otherwise PnL would be negative
+            # but they're on the leaderboard with positive PnL)
+            sane = implied_deposit >= 0 and (lb_pnl == 0 or implied_deposit < net_cashflow)
+            report["sane"] = sane
             report["verified"] = True
 
         log.info("trader_verified", **report)
 
     except Exception as e:
         report["verified"] = False
+        report["sane"] = False
         report["error"] = str(e)[:200]
         log.warning("verification_failed", trader=name, error=str(e)[:100])
 
@@ -528,7 +540,9 @@ async def _crawl_worker(
             net = verification.get("net_cashflow", 0)
             lb = verification.get("leaderboard_pnl", 0)
             dep = verification.get("implied_deposit", 0)
+            sane = verification.get("sane", False)
             notes = (
+                f"{'✅' if sane else '⚠️'} "
                 f"events={verification.get('stored_events', '?')}, "
                 f"cashflow=${net:,.0f}, "
                 f"lb_pnl=${lb:,.0f}, "
