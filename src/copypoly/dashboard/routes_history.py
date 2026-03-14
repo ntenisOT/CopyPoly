@@ -1,15 +1,14 @@
 """History / Data Lake API endpoints — Phase 7.
 
 Provides endpoints to trigger the historical trade crawler
-and monitor its progress.
+(subgraph-based) and monitor its progress.
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
@@ -24,7 +23,6 @@ router = APIRouter(prefix="/api", tags=["history"])
 
 class CrawlRequest(BaseModel):
     top_n: int = 500
-    delay: float = 0.3
     skip_complete: bool = True
 
 
@@ -32,14 +30,12 @@ class CrawlRequest(BaseModel):
 _crawl_task: asyncio.Task | None = None
 
 
-async def _run_crawl_background(top_n: int, delay: float, skip_complete: bool):
+async def _run_crawl_background(top_n: int, skip_complete: bool):
     """Run the crawl in background (not blocking the API response)."""
     from copypoly.collectors.history_crawler import crawl_all_history
 
     try:
-        await crawl_all_history(
-            top_n=top_n, delay=delay, skip_complete=skip_complete
-        )
+        await crawl_all_history(top_n=top_n, skip_complete=skip_complete)
     except Exception as e:
         log.error("background_crawl_failed", error=str(e))
 
@@ -48,22 +44,22 @@ async def _run_crawl_background(top_n: int, delay: float, skip_complete: bool):
 async def trigger_crawl(body: CrawlRequest) -> dict:
     """Start the historical trade crawler in the background.
 
+    Uses Polymarket's Goldsky subgraph (on-chain data).
     Returns immediately — monitor progress via GET /api/crawl/progress.
     """
     global _crawl_task
 
-    # Check if already running
     if _crawl_task and not _crawl_task.done():
         return {"status": "already_running", "message": "Crawl is already in progress"}
 
     _crawl_task = asyncio.create_task(
-        _run_crawl_background(body.top_n, body.delay, body.skip_complete)
+        _run_crawl_background(body.top_n, body.skip_complete)
     )
 
     return {
         "status": "started",
+        "source": "subgraph",
         "top_n": body.top_n,
-        "delay": body.delay,
         "skip_complete": body.skip_complete,
     }
 
@@ -71,9 +67,17 @@ async def trigger_crawl(body: CrawlRequest) -> dict:
 @router.get("/crawl/progress")
 async def get_crawl_progress() -> dict:
     """Get current crawl progress across all traders."""
+    from copypoly.db.models import Trader
+
     async with async_session_factory() as session:
-        # Overall counts
-        total = (await session.execute(
+        # Total scored traders (the denominator for progress)
+        total_scored = (await session.execute(
+            select(func.count()).select_from(Trader)
+            .where(Trader.composite_score > 0)
+        )).scalar() or 0
+
+        # Crawl progress stats
+        processed = (await session.execute(
             select(func.count()).select_from(CrawlProgress)
         )).scalar() or 0
 
@@ -92,7 +96,6 @@ async def get_crawl_progress() -> dict:
             .where(CrawlProgress.status == "ERROR")
         )).scalar() or 0
 
-        # Total activities
         total_activities = (await session.execute(
             select(func.count()).select_from(TradeHistory)
         )).scalar() or 0
@@ -101,7 +104,6 @@ async def get_crawl_progress() -> dict:
             select(func.sum(CrawlProgress.activities_crawled))
         )).scalar() or 0
 
-        # Recent progress entries
         recent = (await session.execute(
             select(CrawlProgress)
             .order_by(CrawlProgress.completed_at.desc().nulls_last())
@@ -109,16 +111,19 @@ async def get_crawl_progress() -> dict:
         )).scalars().all()
 
     is_running = _crawl_task is not None and not _crawl_task.done()
+    denominator = total_scored if total_scored > 0 else processed
 
     return {
         "is_running": is_running,
-        "total_traders": total,
+        "source": "subgraph",
+        "total_traders": total_scored,
+        "processed": processed,
         "complete": complete,
         "running": running,
         "errors": errors,
         "total_activities_crawled": total_crawled,
         "total_activities_stored": total_activities,
-        "progress_pct": round((complete / total) * 100, 1) if total > 0 else 0,
+        "progress_pct": round((complete / denominator) * 100, 1) if denominator > 0 else 0,
         "recent": [
             {
                 "wallet": p.trader_wallet[:10] + "...",
@@ -163,6 +168,7 @@ async def get_history_stats() -> dict:
             type_counts = []
 
     return {
+        "source": "subgraph",
         "total_activities": total,
         "traders_with_data": traders_with_data,
         "avg_per_trader": round(avg_per_trader),

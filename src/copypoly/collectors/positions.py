@@ -139,11 +139,11 @@ async def _collect_trader_positions(
                         new_size=size,
                     )
             else:
-                # New position — insert it
+                # New position — upsert to handle race conditions
                 condition_id = api_pos.get("conditionId", api_pos.get("market", ""))
                 outcome = api_pos.get("outcome", "")
 
-                new_pos = TraderPosition(
+                stmt = pg_insert(TraderPosition).values(
                     trader_wallet=wallet,
                     condition_id=condition_id,
                     token_id=token_id,
@@ -154,13 +154,30 @@ async def _collect_trader_positions(
                     status="OPEN",
                     first_detected_at=now,
                     last_updated_at=now,
+                ).on_conflict_do_update(
+                    constraint="uq_trader_position",
+                    set_={
+                        "size": size,
+                        "current_value": float(api_pos.get("currentValue", 0)) or None,
+                        "last_updated_at": now,
+                    },
                 )
-                session.add(new_pos)
-                await session.flush()  # Get the ID
+                result = await session.execute(stmt)
 
-                await _insert_snapshot(
-                    session, new_pos.id, wallet, token_id, size, api_pos
+                # Get the position ID for the snapshot
+                pos_result = await session.execute(
+                    select(TraderPosition.id).where(
+                        TraderPosition.trader_wallet == wallet,
+                        TraderPosition.token_id == token_id,
+                        TraderPosition.status == "OPEN",
+                    )
                 )
+                pos_id = pos_result.scalar()
+
+                if pos_id:
+                    await _insert_snapshot(
+                        session, pos_id, wallet, token_id, size, api_pos
+                    )
                 stats["new"] += 1
 
                 log.info(
