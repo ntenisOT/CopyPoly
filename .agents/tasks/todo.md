@@ -38,8 +38,42 @@
 
 ## Phase 7: Historical Data Lake & Advanced Analysis
 
-- [ ] 7.1 Full trade history crawler (all leaderboard traders → local DB)
-- [ ] 7.2 Rising star detector (new traders with sudden high win rates)
-- [ ] 7.3 Insider pattern detector (traders who enter before big moves)
-- [ ] 7.4 Seasonal/category pattern analysis
-- [ ] 7.5 Comprehensive offline backtester (all traders, all periods)
+> Data source: Polymarket Goldsky subgraphs (on-chain, free, no rate limits)
+
+### 7.1 Trade History (orderbook-subgraph)
+- [x] 7.1.1 Rewrite crawler to use Goldsky subgraph (replaced unreliable Data API)
+- [x] 7.1.2 Page-by-page storage (not memory-accumulate) with per-page logging
+- [x] 7.1.3 Retry logic for subgraph timeouts + proper error handling
+- [x] 7.1.4 Fix position upsert race condition (positions.py)
+- [ ] 7.1.5 Complete initial crawl of top 50 traders (~2M events)
+- [ ] 7.1.6 Enrich trades with market names (MarketData entity + Gamma API)
+- [ ] 7.1.7 Daily incremental update (crawl only new events since last timestamp)
+
+### 7.2 Activity Data (activity-subgraph)
+- [ ] 7.2.1 Crawl Split events per trader (position entry via USDC → tokens)
+- [ ] 7.2.2 Crawl Merge events per trader (position exit via tokens → USDC)
+- [ ] 7.2.3 Crawl Redemption events per trader (market resolution payouts)
+- [ ] 7.2.4 Store as trade_history rows with trade_type = SPLIT/MERGE/REDEEM
+
+### 7.3 Market Context (oi-subgraph + orderbook)
+- [ ] 7.3.1 Crawl Orderbook for per-market volume stats
+- [ ] 7.3.2 Crawl MarketOpenInterest for market OI
+- [ ] 7.3.3 Store in market_stats table
+
+### 7.4 Computed PnL (derived from 7.1 + 7.2 data)
+- [ ] 7.4.1 Calculate entry cost (USDC spent on buys)
+- [ ] 7.4.2 Calculate exit proceeds (sells + redemptions)
+- [ ] 7.4.3 Per-market and aggregate PnL per trader
+- [ ] 7.4.4 Store in trader_pnl materialized view
+
+### 7.5 Backtesting Engine
+- [ ] 7.5.1 "Copy trader X" simulation (replay trades chronologically)
+- [ ] 7.5.2 Performance metrics (win rate, Sharpe, max drawdown, ROI)
+- [ ] 7.5.3 Comparison: simulated vs actual returns
+
+### 7.6 Advanced Analysis
+- [ ] 7.6.1 Rising star detection (improving win rate over time)
+- [ ] 7.6.2 Insider pattern detection (trades before major price moves)
+- [ ] 7.6.3 Correlation analysis (which traders trade similar markets)
+- [ ] 7.6.4 Market timing analysis (OI + trade timing)
+

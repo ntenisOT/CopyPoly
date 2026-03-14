@@ -28,3 +28,22 @@ Log of corrections and patterns to prevent recurring mistakes.
 - **Mistake**: Used `period=ALL` based on third-party docs; API silently ignored it and returned all-time data for every period
 - **Rule**: Always verify API params against the actual website's network requests. The correct param is `timePeriod` with lowercase values: `day`, `week`, `month`, `all`
 - **Impact**: This would have made our entire analysis engine worthless — it was comparing identical data across "different" periods
+
+## 2026-03-14: Data API is unreliable for historical data
+- **Mistake**: Used Polymarket Data API for historical trade crawling; got 80% error rate due to Cloudflare rate limiting
+- **Rule**: For large-scale historical data crawling, always prefer on-chain data (subgraphs) over REST APIs
+- **Solution**: Replaced with Polymarket's Goldsky subgraph (free, no auth, no rate limits)
+
+## 2026-03-14: Never accumulate large datasets in memory before writing
+- **Mistake**: Collected ALL events for a trader (~160K) in memory before writing to DB. Appeared "stuck" for 10+ minutes
+- **Rule**: Store page-by-page as data arrives. Each page (1000 events) should be immediately persisted and logged
+- **Impact**: Fixed the apparent hang, provided real-time progress visibility, and reduced memory usage
+
+## 2026-03-14: Use full event ID for trade uniqueness, not just txHash
+- **Mistake**: Extracted only `txHash` from subgraph event ID (`txHash_orderHash`). A single transaction can have multiple fills, causing uniqueness collisions
+- **Rule**: Use the full event ID as the unique identifier. In The Graph, event IDs are already unique per fill
+
+## 2026-03-14: Scheduled jobs can race with themselves
+- **Mistake**: Position scanner job used plain INSERT for new positions. When two scheduler cycles overlapped, the same position was inserted twice → UniqueViolation error
+- **Rule**: Always use INSERT...ON CONFLICT (upsert) for data that could be detected by concurrent job runs
+
