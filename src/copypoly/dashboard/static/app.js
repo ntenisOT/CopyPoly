@@ -30,6 +30,7 @@ function navigateTo(page) {
         case 'traders': loadTraders(); break;
         case 'positions': loadPositions(); break;
         case 'signals': loadSignals(); break;
+        case 'performance': loadPerformance(); break;
         case 'config': loadConfig(); break;
     }
 }

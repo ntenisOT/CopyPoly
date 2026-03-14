@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from copypoly.dashboard.api import router as api_router
+from copypoly.dashboard.routes_performance import router as perf_router
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -36,6 +37,7 @@ def create_app() -> FastAPI:
 
     # API routes
     app.include_router(api_router)
+    app.include_router(perf_router)
 
     # Serve static frontend
     if STATIC_DIR.exists():

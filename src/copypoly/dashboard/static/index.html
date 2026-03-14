@@ -7,6 +7,7 @@
     <meta name="description" content="Real-time Polymarket copy trading dashboard with trader scoring, position monitoring, and paper trading.">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/charts.css">
 </head>
 <body>
     <!-- Sidebar -->
@@ -27,6 +28,9 @@
             </a></li>
             <li><a href="#" class="nav-link" data-page="signals" id="nav-signals">
                 <span class="nav-icon">⚡</span> Signals
+            </a></li>
+            <li><a href="#" class="nav-link" data-page="performance" id="nav-performance">
+                <span class="nav-icon">💹</span> Performance
             </a></li>
             <li><a href="#" class="nav-link" data-page="backtest" id="nav-backtest">
                 <span class="nav-icon">🔬</span> Backtest
@@ -231,6 +235,71 @@
             </div>
         </section>
 
+        <!-- Performance Page -->
+        <section class="page" id="page-performance">
+            <div class="page-header">
+                <h1>Performance</h1>
+                <div class="header-actions">
+                    <span class="perf-badge" id="perf-sim-badge"></span>
+                    <select class="perf-period-select" id="perf-period" onchange="loadPerformance()">
+                        <option value="30">30 Days</option>
+                        <option value="90" selected>90 Days</option>
+                        <option value="180">180 Days</option>
+                        <option value="365">1 Year</option>
+                    </select>
+                </div>
+            </div>
+            <div class="perf-stats-grid" id="perf-stats">
+                <div class="stat-card highlight">
+                    <div class="stat-label">Portfolio Value</div>
+                    <div class="stat-value" id="perf-value">—</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Total PnL</div>
+                    <div class="stat-value" id="perf-pnl">—</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">ROI</div>
+                    <div class="stat-value" id="perf-roi">—</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Win Rate</div>
+                    <div class="stat-value" id="perf-winrate">—</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Trades</div>
+                    <div class="stat-value" id="perf-trades">—</div>
+                </div>
+                <div class="stat-card accent">
+                    <div class="stat-label">Max Drawdown</div>
+                    <div class="stat-value" id="perf-dd">—</div>
+                </div>
+            </div>
+            <div class="chart-section">
+                <div class="chart-label">Equity Curve</div>
+                <div class="chart-container" id="equity-chart"></div>
+            </div>
+            <div class="chart-section">
+                <div class="chart-label">Drawdown</div>
+                <div class="chart-container chart-container-sm" id="drawdown-chart"></div>
+            </div>
+            <div class="section-title">Recent Trades</div>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Market</th>
+                            <th>Side</th>
+                            <th>Size ($)</th>
+                            <th>PnL ($)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="perf-trades-tbody"></tbody>
+                </table>
+            </div>
+        </section>
+
         <!-- Config Page -->
         <section class="page" id="page-config">
             <div class="page-header">
@@ -246,6 +315,8 @@
     <!-- Toast notifications -->
     <div class="toast-container" id="toast-container"></div>
 
+    <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
     <script src="/static/app.js"></script>
+    <script src="/static/charts.js"></script>
 </body>
 </html>
