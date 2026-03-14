@@ -24,8 +24,8 @@ log = get_logger(__name__)
 # Periods to scrape (matches API timePeriod values)
 PERIODS = ["all", "month", "week", "day"]
 
-# How many traders to fetch per period/category
-LEADERBOARD_LIMIT = 200
+# How many traders to fetch per period
+LEADERBOARD_LIMIT = 1000
 
 
 async def collect_leaderboard() -> dict[str, int]:
@@ -65,15 +65,14 @@ async def _collect_period(
     log.info("collecting_leaderboard", period=period)
 
     try:
-        entries = await client.get_leaderboard(
+        entries = await client.get_full_leaderboard(
             period=period,
-            limit=LEADERBOARD_LIMIT,
+            max_traders=LEADERBOARD_LIMIT,
         )
     except Exception as e:
         log.error(
             "leaderboard_fetch_failed",
             period=period,
-            category=category,
             error=str(e),
         )
         return 0

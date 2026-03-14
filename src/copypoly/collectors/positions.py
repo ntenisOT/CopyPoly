@@ -191,9 +191,13 @@ async def _collect_trader_positions(
         # Detect closed positions (in DB but not in API)
         for token_id, stored in stored_positions.items():
             if token_id not in seen_token_ids:
+                # Only close if still OPEN (avoids race with concurrent job)
                 await session.execute(
                     update(TraderPosition)
-                    .where(TraderPosition.id == stored.id)
+                    .where(
+                        TraderPosition.id == stored.id,
+                        TraderPosition.status == "OPEN",
+                    )
                     .values(
                         status="CLOSED",
                         closed_at=now,

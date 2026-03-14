@@ -108,8 +108,8 @@ class DataAPIClient(BaseAPIClient):
                 "timePeriod": api_period,
                 "orderBy": order_by,
             },
-            page_size=100,
-            max_pages=(max_traders // 100) + 1,
+            page_size=50,  # API caps at 50 per page regardless of limit
+            max_pages=(max_traders // 50) + 1,
         )
 
     async def get_leaderboard_for_all_periods(
