@@ -11,9 +11,11 @@
 
 ## Phase 3: Analysis & Backtesting
 
-- [ ] 3.1 Trader scoring engine
-- [ ] 3.2 Backtesting module
-- [ ] 3.3 Conflict resolver
+- [x] 3.1 Trader scoring engine (5-dimension weighted composite score)
+- [x] 3.2 Backtesting module (historical trade replay with slippage simulation)
+- [x] 3.3 Conflict resolver (NET SIGNAL approach)
+- [x] 3.4 Position sizer (score-based allocation with risk limits)
+- [x] 3.5 Watchlist manager (auto-promotes top scorers)
 
 ## Phase 4: Copy Trading Engine
 
