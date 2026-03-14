@@ -67,11 +67,22 @@ def create_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
 
+    # 4. Trader scoring & watchlist update (runs less frequently)
+    scheduler.add_job(
+        _run_scoring,
+        trigger=IntervalTrigger(minutes=10),
+        id="trader_scorer",
+        name="Trader Scorer & Watchlist",
+        max_instances=1,
+        coalesce=True,
+    )
+
     log.info(
         "scheduler_configured",
         leaderboard_interval=f"{settings.leaderboard_update_interval_minutes}m",
         position_interval=f"{settings.position_check_interval_seconds}s",
         market_interval=f"{settings.market_sync_interval_minutes}m",
+        scoring_interval="10m",
     )
 
     return scheduler
@@ -103,3 +114,15 @@ async def _run_markets() -> None:
         log.info("market_job_complete", **stats)
     except Exception as e:
         log.error("market_job_failed", error=str(e), exc_info=True)
+
+
+async def _run_scoring() -> None:
+    """Wrapper for trader scoring and watchlist update."""
+    try:
+        from copypoly.analysis.watchlist import update_watchlist
+
+        stats = await update_watchlist()
+        log.info("scoring_job_complete", **stats)
+    except Exception as e:
+        log.error("scoring_job_failed", error=str(e), exc_info=True)
+

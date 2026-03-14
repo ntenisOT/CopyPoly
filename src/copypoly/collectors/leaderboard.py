@@ -79,7 +79,7 @@ async def _collect_period(
         return 0
 
     if not entries:
-        log.warning("leaderboard_empty", period=period, category=category)
+        log.warning("leaderboard_empty", period=period)
         return 0
 
     now = datetime.now(timezone.utc)
@@ -87,14 +87,13 @@ async def _collect_period(
     async with async_session_factory() as session:
         for entry in entries:
             await _upsert_trader(session, entry, now)
-            await _insert_snapshot(session, entry, period, category, now)
+            await _insert_snapshot(session, entry, period, "overall", now)
 
         await session.commit()
 
     log.info(
         "leaderboard_stored",
         period=period,
-        category=category,
         entries=len(entries),
     )
     return len(entries)
