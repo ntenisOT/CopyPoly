@@ -58,18 +58,25 @@ async def run() -> None:
         market_interval=f"{settings.market_sync_interval_minutes}m",
     )
 
-    # TODO: Phase 2.3 — Initialize Polymarket API clients
-    # TODO: Phase 2.4 — Start data collectors
+    # Initialize and start the data collection scheduler
+    from copypoly.collectors.scheduler import create_scheduler
+
+    scheduler = create_scheduler()
+    scheduler.start()
+
+    log.info("copypoly_ready", mode=settings.trading_mode.value)
+
     # TODO: Phase 3   — Start analysis engine
     # TODO: Phase 4   — Start copy trading engine
     # TODO: Phase 5   — Start FastAPI dashboard
-
-    log.info("copypoly_ready", mode=settings.trading_mode.value)
 
     # Keep running until shutdown signal
     await _shutdown_event.wait()
 
     # Cleanup
+    log.info("shutting_down")
+    scheduler.shutdown(wait=False)
+
     from copypoly.db.session import dispose_engine
 
     await dispose_engine()
