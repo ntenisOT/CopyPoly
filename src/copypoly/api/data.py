@@ -31,11 +31,24 @@ class DataAPIClient(BaseAPIClient):
     # Leaderboard
     # ----------------------------------------------------------------
 
+    # API param value mapping — the API uses lowercase timePeriod values
+    _PERIOD_MAP = {
+        "ALL": "all",
+        "MONTH": "month",
+        "WEEK": "week",
+        "DAY": "day",
+        # Also accept lowercase directly
+        "all": "all",
+        "month": "month",
+        "week": "week",
+        "day": "day",
+    }
+
     async def get_leaderboard(
         self,
         *,
-        period: str = "ALL",
-        category: str = "OVERALL",
+        period: str = "all",
+        category: str = "overall",
         order_by: str = "PNL",
         limit: int = 100,
         offset: int = 0,
@@ -43,8 +56,8 @@ class DataAPIClient(BaseAPIClient):
         """Fetch leaderboard rankings.
 
         Args:
-            period: DAY, WEEK, MONTH, ALL
-            category: OVERALL, POLITICS, SPORTS, CRYPTO, etc.
+            period: day, week, month, all (case-insensitive)
+            category: overall, politics, sports, crypto, etc.
             order_by: PNL or VOL
             limit: Number of results
             offset: Pagination offset
@@ -52,9 +65,10 @@ class DataAPIClient(BaseAPIClient):
         Returns:
             List of leaderboard entries with rank, wallet, pnl, volume.
         """
+        api_period = self._PERIOD_MAP.get(period, period.lower())
+
         params: dict[str, Any] = {
-            "period": period,
-            "category": category,
+            "timePeriod": api_period,
             "orderBy": order_by,
             "limit": limit,
             "offset": offset,
@@ -62,8 +76,7 @@ class DataAPIClient(BaseAPIClient):
 
         log.info(
             "fetching_leaderboard",
-            period=period,
-            category=category,
+            period=api_period,
             order_by=order_by,
             limit=limit,
         )
@@ -73,27 +86,26 @@ class DataAPIClient(BaseAPIClient):
     async def get_full_leaderboard(
         self,
         *,
-        period: str = "ALL",
-        category: str = "OVERALL",
+        period: str = "all",
         order_by: str = "PNL",
         max_traders: int = 500,
     ) -> list[dict[str, Any]]:
         """Fetch all available leaderboard entries using pagination.
 
         Args:
-            period: DAY, WEEK, MONTH, ALL
-            category: OVERALL, POLITICS, etc.
+            period: day, week, month, all
             order_by: PNL or VOL
             max_traders: Maximum traders to fetch.
 
         Returns:
             Complete leaderboard (up to max_traders).
         """
+        api_period = self._PERIOD_MAP.get(period, period.lower())
+
         return await self.fetch_all_pages(
             "/v1/leaderboard",
             params={
-                "period": period,
-                "category": category,
+                "timePeriod": api_period,
                 "orderBy": order_by,
             },
             page_size=100,
@@ -103,22 +115,20 @@ class DataAPIClient(BaseAPIClient):
     async def get_leaderboard_for_all_periods(
         self,
         *,
-        category: str = "OVERALL",
         limit: int = 100,
     ) -> dict[str, list[dict[str, Any]]]:
         """Fetch leaderboard for all time periods.
 
         Returns:
             Dict mapping period → leaderboard entries.
-            {"ALL": [...], "MONTH": [...], "WEEK": [...], "DAY": [...]}
+            {"all": [...], "month": [...], "week": [...], "day": [...]}
         """
-        periods = ["ALL", "MONTH", "WEEK", "DAY"]
+        periods = ["all", "month", "week", "day"]
         result: dict[str, list[dict[str, Any]]] = {}
 
         for period in periods:
             result[period] = await self.get_leaderboard(
                 period=period,
-                category=category,
                 limit=limit,
             )
             log.info(

@@ -21,9 +21,8 @@ from copypoly.logging import get_logger
 
 log = get_logger(__name__)
 
-# Periods and categories to scrape
-PERIODS = ["ALL", "MONTH", "WEEK", "DAY"]
-CATEGORIES = ["OVERALL"]  # Start with OVERALL; expand later
+# Periods to scrape (matches API timePeriod values)
+PERIODS = ["all", "month", "week", "day"]
 
 # How many traders to fetch per period/category
 LEADERBOARD_LIMIT = 200
@@ -39,10 +38,9 @@ async def collect_leaderboard() -> dict[str, int]:
     stats: dict[str, int] = {}
 
     try:
-        for category in CATEGORIES:
-            for period in PERIODS:
-                count = await _collect_period(client, period, category)
-                stats[f"{period}_{category}"] = count
+        for period in PERIODS:
+            count = await _collect_period(client, period)
+            stats[period] = count
     finally:
         await client.close()
 
@@ -54,24 +52,21 @@ async def collect_leaderboard() -> dict[str, int]:
 async def _collect_period(
     client: DataAPIClient,
     period: str,
-    category: str,
 ) -> int:
-    """Fetch and store leaderboard for a single period/category.
+    """Fetch and store leaderboard for a single period.
 
     Args:
         client: Data API client.
-        period: Time period (ALL, MONTH, WEEK, DAY).
-        category: Leaderboard category.
+        period: Time period (all, month, week, day).
 
     Returns:
         Number of entries stored.
     """
-    log.info("collecting_leaderboard", period=period, category=category)
+    log.info("collecting_leaderboard", period=period)
 
     try:
         entries = await client.get_leaderboard(
             period=period,
-            category=category,
             limit=LEADERBOARD_LIMIT,
         )
     except Exception as e:
@@ -188,10 +183,10 @@ async def update_trader_best_pnl(wallet: str) -> None:
     async with async_session_factory() as session:
         # Get best PnL per period from snapshots
         for period, column in [
-            ("ALL", "best_pnl_all_time"),
-            ("MONTH", "best_pnl_monthly"),
-            ("WEEK", "best_pnl_weekly"),
-            ("DAY", "best_pnl_daily"),
+            ("all", "best_pnl_all_time"),
+            ("month", "best_pnl_monthly"),
+            ("week", "best_pnl_weekly"),
+            ("day", "best_pnl_daily"),
         ]:
             result = await session.execute(
                 select(LeaderboardSnapshot.pnl)

@@ -7,7 +7,7 @@
 - [x] 2.2.1 Git repo setup (SSH key, remote, initial commit)
 - [x] 2.2.2 AI agent rules & workflows
 - [x] 2.3 Polymarket API clients (Data API, Gamma API, CLOB client)
-- [ ] 2.4 Data collectors (leaderboard, positions, markets)
+- [x] 2.4 Data collectors (leaderboard, positions, markets)
 
 ## Phase 3: Analysis & Backtesting
 

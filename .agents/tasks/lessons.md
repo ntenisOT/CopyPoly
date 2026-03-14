@@ -23,3 +23,8 @@ Log of corrections and patterns to prevent recurring mistakes.
 ## 2026-03-14: GPG signing blocks git commit
 - **Mistake**: Git commit hung because global GPG signing was enabled
 - **Rule**: Disable GPG signing per-repo with `git config --local commit.gpgsign false`
+
+## 2026-03-14: Polymarket API uses `timePeriod` not `period`
+- **Mistake**: Used `period=ALL` based on third-party docs; API silently ignored it and returned all-time data for every period
+- **Rule**: Always verify API params against the actual website's network requests. The correct param is `timePeriod` with lowercase values: `day`, `week`, `month`, `all`
+- **Impact**: This would have made our entire analysis engine worthless — it was comparing identical data across "different" periods
