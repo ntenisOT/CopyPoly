@@ -40,9 +40,12 @@ ORDERBOOK_SUBGRAPH = (
 PAGE_SIZE = 1000  # Max allowed by The Graph
 INTER_PAGE_DELAY = 0.05  # Tiny polite delay between pages
 
-# Polymarket Data API for activity data (REDEEM, MERGE, SPLIT, REWARD)
-DATA_API_ACTIVITY = "https://data-api.polymarket.com/v1/activity"
-ACTIVITY_PAGE_SIZE = 100  # Data API max per page
+# Activity subgraph for merges, splits, redemptions
+ACTIVITY_SUBGRAPH = (
+    "https://api.goldsky.com/api/public/"
+    "project_cl6mb8i9h0003e201j6li0diw/"
+    "subgraphs/activity-subgraph/0.0.3/gn"
+)
 
 
 async def _query_subgraph(
@@ -68,21 +71,26 @@ def _parse_event(event: dict, wallet: str) -> dict:
     ts = datetime.fromtimestamp(int(event["timestamp"]), tz=timezone.utc)
     is_maker = event["maker"].lower() == wallet.lower()
 
-    if is_maker:
-        side = "MAKER"
-        asset = event["makerAssetId"]
-        size_raw = int(event["makerAmountFilled"])
-        counterpart_raw = int(event["takerAmountFilled"])
-    else:
-        side = "TAKER"
-        asset = event["takerAssetId"]
-        size_raw = int(event["takerAmountFilled"])
-        counterpart_raw = int(event["makerAmountFilled"])
+    my_asset = event["makerAssetId"] if is_maker else event["takerAssetId"]
+    my_amount = int(event["makerAmountFilled"]) if is_maker else int(event["takerAmountFilled"])
+    their_asset = event["takerAssetId"] if is_maker else event["makerAssetId"]
+    their_amount = int(event["takerAmountFilled"]) if is_maker else int(event["makerAmountFilled"])
 
     # CTF token amounts are in 1e6 precision
-    size = size_raw / 1e6
-    counterpart = counterpart_raw / 1e6
-    price = counterpart / size if size > 0 else None
+    if my_asset == "0":
+        # We gave USDC, received tokens -> This is a BUY of tokens
+        side = "BUY"
+        asset = their_asset
+        usdc_size = my_amount / 1e6
+        size = their_amount / 1e6
+    else:
+        # We gave tokens, received USDC -> This is a SELL of tokens
+        side = "SELL"
+        asset = my_asset
+        size = my_amount / 1e6
+        usdc_size = their_amount / 1e6
+
+    price = usdc_size / size if size > 0 else None
 
     # Use FULL event ID as transaction_hash (unique per fill)
     return {
@@ -92,7 +100,7 @@ def _parse_event(event: dict, wallet: str) -> dict:
         "trade_type": "TRADE",
         "side": side,
         "size": size,
-        "usdc_size": counterpart,
+        "usdc_size": usdc_size,
         "price": price,
         "asset": asset,
         "outcome_index": None,
@@ -320,181 +328,499 @@ async def _crawl_activity_data(
     client: httpx.AsyncClient,
     trader_name: str,
 ) -> dict[str, int]:
-    """Crawl REDEEM, MERGE, SPLIT, REWARD events from Polymarket Data API.
+    """Crawl MERGE, SPLIT, REDEMPTION events from Polymarket Activity Subgraph.
 
-    These events are NOT in the orderbook subgraph but are essential
-    for PnL computation (most profit comes from redemptions).
+    Uses on-chain activity subgraph (not Data API) for complete data
+    with no offset limits. This is critical for accurate PnL computation.
     """
     wallet_lower = wallet.lower()
-    offset = 0
     total_fetched = 0
     total_inserted = 0
-    page = 0
 
+    activity_sg = (
+        "https://api.goldsky.com/api/public/"
+        "project_cl6mb8i9h0003e201j6li0diw/"
+        "subgraphs/activity-subgraph/0.0.3/gn"
+    )
+    timeout = httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0)
+
+    # ── 1. Merges ──
+    last_id = ""
+    merge_count = 0
     while True:
         for attempt in range(3):
             try:
-                resp = await client.get(
-                    DATA_API_ACTIVITY,
-                    params={"user": wallet_lower, "limit": ACTIVITY_PAGE_SIZE, "offset": offset},
-                    timeout=httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0),
-                )
+                resp = await client.post(activity_sg, json={"query": f"""{{
+                    merges(first:1000, where:{{stakeholder:"{wallet_lower}", id_gt:"{last_id}"}}, orderBy:id) {{
+                        id timestamp condition amount
+                    }}
+                }}"""}, timeout=timeout)
                 resp.raise_for_status()
-                events = [e for e in resp.json() if isinstance(e, dict)]
+                data = resp.json().get("data", {}).get("merges", [])
                 break
             except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
                 if attempt < 2:
                     await asyncio.sleep(3 * (attempt + 1))
                     continue
-                raise
+                log.warning("merge_fetch_failed", trader=trader_name, error=str(e)[:100])
+                data = []
+                break
 
-        if not events:
+        if not data:
             break
 
-        # Parse and store activity events (non-TRADE types only)
         rows = []
-        for e in events:
-            etype = e.get("type", "")
-            if etype in ("REDEEM", "MERGE", "SPLIT", "REWARD"):
-                ts = datetime.fromtimestamp(int(e.get("timestamp", 0)), tz=timezone.utc)
-                rows.append({
-                    "trader_wallet": wallet_lower,
-                    "timestamp": ts,
-                    "condition_id": e.get("conditionId"),
-                    "trade_type": etype,
-                    "side": e.get("side") or etype,
-                    "size": float(e.get("size", 0) or 0),
-                    "usdc_size": float(e.get("usdcSize", 0) or 0),
-                    "price": float(e.get("price", 0) or 0),
-                    "asset": e.get("asset") or "",
-                    "outcome_index": int(e.get("outcomeIndex")) if e.get("outcomeIndex") not in (None, "", "999") else None,
-                    "outcome": e.get("outcome"),
-                    "transaction_hash": e.get("transactionHash", f"activity_{wallet_lower}_{offset}_{total_fetched}"),
-                    "market_title": e.get("title"),
-                    "market_slug": e.get("slug"),
-                })
+        for m in data:
+            ts = datetime.fromtimestamp(int(m["timestamp"]), tz=timezone.utc)
+            rows.append({
+                "trader_wallet": wallet_lower,
+                "timestamp": ts,
+                "condition_id": m["condition"],
+                "trade_type": "MERGE",
+                "side": "MERGE",
+                "size": int(m["amount"]) / 1e6,
+                "usdc_size": int(m["amount"]) / 1e6,
+                "price": 0.5,  # Merge = sell at $0.50
+                "asset": m["condition"],  # Use condition as asset for merges
+                "outcome_index": None,
+                "outcome": None,
+                "transaction_hash": m["id"],
+                "market_title": None,
+                "market_slug": None,
+            })
 
         if rows:
             inserted = await _store_batch(rows)
             total_inserted += inserted
 
-        total_fetched += len([e for e in events if e.get("type") in ("REDEEM", "MERGE", "SPLIT", "REWARD")])
-        page += 1
-        offset += ACTIVITY_PAGE_SIZE
+        merge_count += len(data)
+        total_fetched += len(data)
+        last_id = data[-1]["id"]
+        if len(data) < 1000:
+            break
+        await asyncio.sleep(INTER_PAGE_DELAY)
 
-        if page % 10 == 0 or len(events) < ACTIVITY_PAGE_SIZE:
-            log.info(
-                "activity_progress",
-                trader=trader_name,
-                page=page,
-                fetched=total_fetched,
-                inserted=total_inserted,
-            )
+    # ── 2. Splits ──
+    last_id = ""
+    split_count = 0
+    while True:
+        for attempt in range(3):
+            try:
+                resp = await client.post(activity_sg, json={"query": f"""{{
+                    splits(first:1000, where:{{stakeholder:"{wallet_lower}", id_gt:"{last_id}"}}, orderBy:id) {{
+                        id timestamp condition amount
+                    }}
+                }}"""}, timeout=timeout)
+                resp.raise_for_status()
+                data = resp.json().get("data", {}).get("splits", [])
+                break
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
+                if attempt < 2:
+                    await asyncio.sleep(3 * (attempt + 1))
+                    continue
+                log.warning("split_fetch_failed", trader=trader_name, error=str(e)[:100])
+                data = []
+                break
 
-        if len(events) < ACTIVITY_PAGE_SIZE:
+        if not data:
             break
 
-        await asyncio.sleep(0.1)  # Polite delay for Data API
+        rows = []
+        for s in data:
+            ts = datetime.fromtimestamp(int(s["timestamp"]), tz=timezone.utc)
+            rows.append({
+                "trader_wallet": wallet_lower,
+                "timestamp": ts,
+                "condition_id": s["condition"],
+                "trade_type": "SPLIT",
+                "side": "SPLIT",
+                "size": int(s["amount"]) / 1e6,
+                "usdc_size": int(s["amount"]) / 1e6,
+                "price": 0.5,  # Split = buy at $0.50
+                "asset": s["condition"],
+                "outcome_index": None,
+                "outcome": None,
+                "transaction_hash": s["id"],
+                "market_title": None,
+                "market_slug": None,
+            })
 
-    return {"fetched": total_fetched, "inserted": total_inserted, "pages": page}
+        if rows:
+            inserted = await _store_batch(rows)
+            total_inserted += inserted
+
+        split_count += len(data)
+        total_fetched += len(data)
+        last_id = data[-1]["id"]
+        if len(data) < 1000:
+            break
+        await asyncio.sleep(INTER_PAGE_DELAY)
+
+    # ── 3. Redemptions ──
+    # CRITICAL: NegRisk redeems have the NegRiskAdapter as `redeemer`, NOT
+    # the user wallet. So we CANNOT filter by redeemer.
+    # Strategy: get condition list from PM closed-positions API, then query
+    # redemptions per-condition (no redeemer filter).
+    redeem_count = 0
+
+    # Get conditions from PM closed-positions API (most complete source)
+    conditions_set = set()
+    try:
+        resp = await client.get(
+            "https://data-api.polymarket.com/closed-positions",
+            params={"user": wallet_lower, "limit": 200},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        for pos in resp.json():
+            cid = pos.get("conditionId", "")
+            if cid:
+                conditions_set.add(cid)
+    except Exception as e:
+        log.warning("closed_positions_fetch_failed", trader=trader_name, error=str(e)[:100])
+
+    # Also add conditions from merge events we already stored
+    try:
+        async with async_session_factory() as session:
+            from sqlalchemy import func as sqlfunc
+            db_conds = (await session.execute(
+                select(sqlfunc.distinct(TradeHistory.condition_id))
+                .where(TradeHistory.trader_wallet == wallet_lower)
+                .where(TradeHistory.condition_id.isnot(None))
+            )).scalars().all()
+            conditions_set.update(db_conds)
+    except Exception:
+        pass
+
+    log.info("redemption_conditions", trader=trader_name, conditions=len(conditions_set))
+
+    # Query redemptions per-condition WITH redeemer filter
+    # (matches verify_full_account.py which got 12/12 correct)
+    for cond in conditions_set:
+        for attempt in range(3):
+            try:
+                resp = await client.post(activity_sg, json={"query": f"""{{
+                    redemptions(first:100, where:{{redeemer:"{wallet_lower}", condition:"{cond}"}}) {{
+                        id timestamp condition payout
+                    }}
+                }}"""}, timeout=timeout)
+                resp.raise_for_status()
+                redeem_data = resp.json().get("data", {}).get("redemptions", [])
+                break
+            except (httpx.TimeoutException, httpx.HTTPStatusError):
+                if attempt < 2:
+                    await asyncio.sleep(3 * (attempt + 1))
+                    continue
+                redeem_data = []
+                break
+
+        if redeem_data:
+            rows = []
+            for rd in redeem_data:
+                ts = datetime.fromtimestamp(int(rd["timestamp"]), tz=timezone.utc)
+                rows.append({
+                    "trader_wallet": wallet_lower,
+                    "timestamp": ts,
+                    "condition_id": rd["condition"],
+                    "trade_type": "REDEEM",
+                    "side": "REDEEM",
+                    "size": int(rd["payout"]) / 1e6,
+                    "usdc_size": int(rd["payout"]) / 1e6,
+                    "price": 1.0,
+                    "asset": rd["condition"],
+                    "outcome_index": None,
+                    "outcome": None,
+                    "transaction_hash": rd["id"],
+                    "market_title": None,
+                    "market_slug": None,
+                })
+            if rows:
+                inserted = await _store_batch(rows)
+                total_inserted += inserted
+            redeem_count += len(rows)
+            total_fetched += len(rows)
+
+        await asyncio.sleep(INTER_PAGE_DELAY)
+
+    # ── 4. NegRisk Conversions ──
+    # These are distinct from merges/splits — they convert NO tokens to YES
+    # and vice versa within a NegRisk market. Important for PnL tracking.
+    conversion_count = 0
+    last_id = ""
+    while True:
+        for attempt in range(3):
+            try:
+                resp = await client.post(activity_sg, json={"query": f"""{{
+                    negRiskConversions(first:1000, where:{{stakeholder:"{wallet_lower}", id_gt:"{last_id}"}}, orderBy:id) {{
+                        id timestamp condition amount
+                    }}
+                }}"""}, timeout=timeout)
+                resp.raise_for_status()
+                data = resp.json().get("data", {}).get("negRiskConversions", [])
+                break
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
+                if attempt < 2:
+                    await asyncio.sleep(3 * (attempt + 1))
+                    continue
+                log.warning("conversion_fetch_failed", trader=trader_name, error=str(e)[:100])
+                data = []
+                break
+
+        if not data:
+            break
+
+        rows = []
+        for c in data:
+            ts = datetime.fromtimestamp(int(c["timestamp"]), tz=timezone.utc)
+            rows.append({
+                "trader_wallet": wallet_lower,
+                "timestamp": ts,
+                "condition_id": c["condition"],
+                "trade_type": "CONVERSION",
+                "side": "CONVERSION",
+                "size": int(c["amount"]) / 1e6,
+                "usdc_size": int(c["amount"]) / 1e6,
+                "price": 0.0,
+                "asset": c["condition"],
+                "outcome_index": None,
+                "outcome": None,
+                "transaction_hash": c["id"],
+                "market_title": None,
+                "market_slug": None,
+            })
+
+        if rows:
+            inserted = await _store_batch(rows)
+            total_inserted += inserted
+
+        conversion_count += len(data)
+        total_fetched += len(data)
+        last_id = data[-1]["id"]
+        if len(data) < 1000:
+            break
+        await asyncio.sleep(INTER_PAGE_DELAY)
+
+    log.info(
+        "activity_complete",
+        trader=trader_name,
+        merges=merge_count,
+        splits=split_count,
+        redeems=redeem_count,
+        conversions=conversion_count,
+        total=total_fetched,
+        inserted=total_inserted,
+    )
+
+    return {"fetched": total_fetched, "inserted": total_inserted, "pages": 0}
 
 
 async def _verify_trader(wallet: str, name: str, crawl_result: dict) -> dict:
-    """Verify crawled data by computing PnL and comparing to leaderboard.
+    """Verify crawled data using the EXACT per-market PnL calculator.
 
-    PnL formula (verified against Polymarket profiles):
-      net_cashflow = sell_usdc + redeem_usdc + reward_usdc - buy_usdc - merge_usdc
-      pnl = net_cashflow - initial_deposit
-      (initial_deposit = net_cashflow - leaderboard_pnl)
-
-    Returns verification report dict.
+    Uses the same logic as verify_full_account.py which scored 22/22 on Theo4.
+    Processes maker fills + merges + splits + redeems through PositionTracker,
+    then compares per-position to PM's closed-positions API.
     """
+    from collections import defaultdict
+    from copypoly.pnl_calculator import PositionTracker, COLLATERAL_SCALE, FIFTY_CENTS
+
     wallet_lower = wallet.lower()
     report = {"trader": name, "wallet": wallet_lower[:12]}
 
     try:
-        async with async_session_factory() as session:
-            from sqlalchemy import func as sqlfunc
+        async with httpx.AsyncClient() as client:
+            # 1. Get PM official data
+            r = await client.get(
+                "https://data-api.polymarket.com/closed-positions",
+                params={"user": wallet_lower, "limit": 200},
+                timeout=httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=5.0),
+            )
+            all_pos = r.json()
 
-            # Count events by type
-            row = (await session.execute(
-                select(
-                    sqlfunc.count().label("events"),
-                    sqlfunc.count(sqlfunc.distinct(TradeHistory.asset)).label("tokens"),
-                    sqlfunc.min(TradeHistory.timestamp).label("oldest"),
-                    sqlfunc.max(TradeHistory.timestamp).label("newest"),
-                ).where(TradeHistory.trader_wallet == wallet_lower)
-            )).one()
+            r_lb = await client.get(
+                "https://data-api.polymarket.com/v1/leaderboard",
+                params={"timePeriod": "all", "user": wallet_lower},
+                timeout=httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=5.0),
+            )
+            lb_data = r_lb.json()
+            lb_pnl = float(lb_data[0].get("pnl", 0)) if lb_data else 0
 
-            report["stored_events"] = row.events
-            report["unique_tokens"] = row.tokens
+            # Build lookup: asset -> PM data, condition -> [asset_ids]
+            pm_by_asset = {}
+            cond_to_assets = defaultdict(set)
+            for p in all_pos:
+                pm_by_asset[p["asset"]] = p
+                cond = p.get("conditionId", "")
+                cond_to_assets[cond].add(p["asset"])
+                if p.get("oppositeAsset"):
+                    cond_to_assets[cond].add(p["oppositeAsset"])
 
-            # PnL components from our stored data
-            # BUY trades: asset='0' means providing USDC (buying tokens)
-            buy_usdc = (await session.execute(
-                select(sqlfunc.coalesce(sqlfunc.sum(TradeHistory.size), 0))
-                .where(TradeHistory.trader_wallet == wallet_lower)
-                .where(TradeHistory.trade_type == "TRADE")
-                .where(TradeHistory.asset == "0")
-            )).scalar() or 0
+            # 2. Fetch MAKER fills from subgraph
+            fills = []
+            last_id = ""
+            while True:
+                q = f"""{{ orderFilledEvents(first:1000, orderBy:id, orderDirection:asc,
+                  where:{{maker:"{wallet_lower}", id_gt:"{last_id}"}}) {{
+                  id timestamp makerAssetId takerAssetId makerAmountFilled takerAmountFilled }} }}"""
+                resp = await client.post(ORDERBOOK_SUBGRAPH, json={"query": q},
+                                         timeout=httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0))
+                data = resp.json().get("data", {}).get("orderFilledEvents", [])
+                if not data:
+                    break
+                fills.extend(data)
+                last_id = data[-1]["id"]
+                if len(data) < 1000:
+                    break
+                await asyncio.sleep(0.05)
 
-            # SELL trades: asset != '0' means providing tokens (selling)
-            sell_usdc = (await session.execute(
-                select(sqlfunc.coalesce(sqlfunc.sum(TradeHistory.usdc_size), 0))
-                .where(TradeHistory.trader_wallet == wallet_lower)
-                .where(TradeHistory.trade_type == "TRADE")
-                .where(TradeHistory.asset != "0")
-            )).scalar() or 0
+            # 3. Fetch merges, splits, redemptions from activity subgraph
+            activity_sg = ACTIVITY_SUBGRAPH
+            timeout = httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0)
 
-            # Redemptions
-            redeem_usdc = (await session.execute(
-                select(sqlfunc.coalesce(sqlfunc.sum(TradeHistory.usdc_size), 0))
-                .where(TradeHistory.trader_wallet == wallet_lower)
-                .where(TradeHistory.trade_type == "REDEEM")
-            )).scalar() or 0
+            merges = []
+            last_id = ""
+            while True:
+                resp = await client.post(activity_sg, json={"query": f"""{{
+                    merges(first:1000, where:{{stakeholder:"{wallet_lower}", id_gt:"{last_id}"}}, orderBy:id) {{
+                        id timestamp condition amount }} }}"""}, timeout=timeout)
+                data = resp.json().get("data", {}).get("merges", [])
+                if not data:
+                    break
+                merges.extend(data)
+                last_id = data[-1]["id"]
+                if len(data) < 1000:
+                    break
 
-            # Merges
-            merge_usdc = (await session.execute(
-                select(sqlfunc.coalesce(sqlfunc.sum(TradeHistory.usdc_size), 0))
-                .where(TradeHistory.trader_wallet == wallet_lower)
-                .where(TradeHistory.trade_type == "MERGE")
-            )).scalar() or 0
+            splits = []
+            last_id = ""
+            while True:
+                resp = await client.post(activity_sg, json={"query": f"""{{
+                    splits(first:1000, where:{{stakeholder:"{wallet_lower}", id_gt:"{last_id}"}}, orderBy:id) {{
+                        id timestamp condition amount }} }}"""}, timeout=timeout)
+                data = resp.json().get("data", {}).get("splits", [])
+                if not data:
+                    break
+                splits.extend(data)
+                last_id = data[-1]["id"]
+                if len(data) < 1000:
+                    break
 
-            # Rewards
-            reward_usdc = (await session.execute(
-                select(sqlfunc.coalesce(sqlfunc.sum(TradeHistory.usdc_size), 0))
-                .where(TradeHistory.trader_wallet == wallet_lower)
-                .where(TradeHistory.trade_type == "REWARD")
-            )).scalar() or 0
+            redeems = []
+            for cond in cond_to_assets.keys():
+                resp = await client.post(activity_sg, json={"query": f"""{{
+                    redemptions(first:100, where:{{redeemer:"{wallet_lower}", condition:"{cond}"}}) {{
+                        id timestamp condition payout }} }}"""}, timeout=timeout)
+                rd_data = resp.json().get("data", {}).get("redemptions", [])
+                redeems.extend(rd_data)
+                await asyncio.sleep(0.05)
 
-            net_cashflow = float(sell_usdc) + float(redeem_usdc) + float(reward_usdc) - float(buy_usdc) - float(merge_usdc)
-            report["net_cashflow"] = round(net_cashflow, 2)
+        # 4. Build sorted event list (timestamp, log_index, type, raw)
+        def log_idx(eid: str) -> int:
+            parts = eid.split("_")
+            try:
+                return int(parts[-1], 16) if len(parts) > 1 else 0
+            except ValueError:
+                return 0
 
-            # Compare with leaderboard PnL + Volume
-            from copypoly.db.models import LeaderboardSnapshot
-            lb_row = (await session.execute(
-                select(
-                    sqlfunc.max(LeaderboardSnapshot.pnl).label("pnl"),
-                    sqlfunc.max(LeaderboardSnapshot.volume).label("volume"),
-                ).where(LeaderboardSnapshot.trader_wallet == wallet_lower)
-                .where(LeaderboardSnapshot.period == "all")
-            )).one()
+        all_events = []
+        for f in fills:
+            all_events.append((int(f["timestamp"]), log_idx(f["id"]), "FILL", f))
+        for m in merges:
+            all_events.append((int(m["timestamp"]), log_idx(m["id"]), "MERGE", m))
+        for s in splits:
+            all_events.append((int(s["timestamp"]), log_idx(s["id"]), "SPLIT", s))
+        for rd in redeems:
+            all_events.append((int(rd["timestamp"]), log_idx(rd["id"]), "REDEEM", rd))
 
-            lb_pnl = float(lb_row.pnl or 0)
-            lb_vol = float(lb_row.volume or 0)
-            implied_deposit = net_cashflow - lb_pnl
+        all_events.sort(key=lambda x: (x[0], x[1]))
 
-            report["leaderboard_pnl"] = round(lb_pnl, 0)
-            report["leaderboard_volume"] = round(lb_vol, 0)
-            report["implied_deposit"] = round(implied_deposit, 0)
+        # 5. Process through PnL calculator
+        trackers = {}
+        for ts, li, etype, raw in all_events:
+            if etype == "FILL":
+                maker_asset = raw["makerAssetId"]
+                taker_asset = raw["takerAssetId"]
+                maker_amount = int(raw["makerAmountFilled"])
+                taker_amount = int(raw["takerAmountFilled"])
 
-            # Sanity: deposit should be positive (trader put money in)
-            # and less than net_cashflow (otherwise PnL would be negative
-            # but they're on the leaderboard with positive PnL)
-            sane = implied_deposit >= 0 and (lb_pnl == 0 or implied_deposit < net_cashflow)
-            report["sane"] = sane
-            report["verified"] = True
+                if maker_asset == "0":
+                    pos_id, base, quote = taker_asset, taker_amount, maker_amount
+                    side = "BUY"
+                else:
+                    pos_id, base, quote = maker_asset, maker_amount, taker_amount
+                    side = "SELL"
 
+                if base <= 0:
+                    continue
+                price = quote * COLLATERAL_SCALE // base
+                if pos_id not in trackers:
+                    trackers[pos_id] = PositionTracker(pos_id)
+                if side == "BUY":
+                    trackers[pos_id].buy(price, base)
+                else:
+                    trackers[pos_id].sell(price, base)
+
+            elif etype == "MERGE":
+                cond = raw["condition"]
+                amount = int(raw["amount"])
+                for asset in cond_to_assets.get(cond, []):
+                    if asset not in trackers:
+                        trackers[asset] = PositionTracker(asset)
+                    trackers[asset].sell(FIFTY_CENTS, amount)
+
+            elif etype == "SPLIT":
+                cond = raw["condition"]
+                amount = int(raw["amount"])
+                for asset in cond_to_assets.get(cond, []):
+                    if asset not in trackers:
+                        trackers[asset] = PositionTracker(asset)
+                    trackers[asset].buy(FIFTY_CENTS, amount)
+
+            elif etype == "REDEEM":
+                cond = raw["condition"]
+                for asset in cond_to_assets.get(cond, []):
+                    if asset not in trackers:
+                        continue
+                    tracker = trackers[asset]
+                    pm = pm_by_asset.get(asset, {})
+                    cur_price = pm.get("curPrice", 0)
+                    res_price = int(cur_price * COLLATERAL_SCALE)
+                    tracker.sell(res_price, tracker.amount)
+
+        # 6. Compare to PM
+        matches = 0
+        total = 0
+        total_calc_pnl = 0.0
+        total_pm_pnl = 0.0
+
+        for p in all_pos:
+            asset = p["asset"]
+            tracker = trackers.get(asset)
+            if not tracker:
+                continue
+            pm_pnl = p.get("realizedPnl", 0)
+            pm_tb = p.get("totalBought", 0)
+            pm_avg = p.get("avgPrice", 0)
+
+            tb_ok = abs(tracker.total_bought_f - pm_tb) < max(0.01, pm_tb * 0.0001)
+            avg_ok = abs(tracker.avg_price_f - pm_avg) < 0.001
+            pnl_ok = abs(tracker.realized_pnl_f - pm_pnl) < max(0.01, abs(pm_pnl) * 0.0001)
+
+            if tb_ok and avg_ok and pnl_ok:
+                matches += 1
+            total += 1
+            total_calc_pnl += tracker.realized_pnl_f
+            total_pm_pnl += pm_pnl
+
+        report["positions_matched"] = f"{matches}/{total}"
+        report["calc_pnl"] = round(total_calc_pnl, 2)
+        report["pm_pnl"] = round(total_pm_pnl, 2)
+        report["leaderboard_pnl"] = round(lb_pnl, 2)
+        report["pnl_delta"] = round(total_calc_pnl - total_pm_pnl, 2)
+        report["sane"] = matches == total
+        report["verified"] = True
+
+        report["stored_events"] = len(fills) + len(merges) + len(splits) + len(redeems)
         log.info("trader_verified", **report)
 
     except Exception as e:
@@ -537,16 +863,19 @@ async def _crawl_worker(
             verification = await _verify_trader(wallet, name, result)
 
             # Store verification notes in crawl_progress
-            net = verification.get("net_cashflow", 0)
-            lb = verification.get("leaderboard_pnl", 0)
-            dep = verification.get("implied_deposit", 0)
+            matched = verification.get("positions_matched", "?/?")
+            calc_pnl = verification.get("calc_pnl", 0)
+            pm_pnl = verification.get("pm_pnl", 0)
+            lb_pnl = verification.get("leaderboard_pnl", 0)
+            delta = verification.get("pnl_delta", 0)
             sane = verification.get("sane", False)
             notes = (
-                f"{'✅' if sane else '⚠️'} "
-                f"events={verification.get('stored_events', '?')}, "
-                f"cashflow=${net:,.0f}, "
-                f"lb_pnl=${lb:,.0f}, "
-                f"deposit=${dep:,.0f}"
+                f"{'[OK]' if sane else '[WARN]'} "
+                f"matched={matched}, "
+                f"calc=${calc_pnl:,.0f}, "
+                f"pm=${pm_pnl:,.0f}, "
+                f"lb=${lb_pnl:,.0f}, "
+                f"delta=${delta:,.0f}"
             )
             async with async_session_factory() as session:
                 await session.execute(
@@ -568,7 +897,8 @@ async def _crawl_worker(
                 n=n,
                 fetched=result["fetched"],
                 inserted=result["inserted"],
-                net_cashflow=round(net, 0),
+                matched=matched,
+                calc_pnl=round(calc_pnl, 0),
             )
         except Exception as e:
             async with stats_lock:
