@@ -188,9 +188,9 @@ class TraderPosition(Base):
         String(42), ForeignKey("traders.wallet"), nullable=False
     )
     condition_id: Mapped[str] = mapped_column(
-        String(66), ForeignKey("markets.condition_id"), nullable=False
+        String(66), nullable=False  # No FK — positions may reference markets not yet synced
     )
-    token_id: Mapped[str] = mapped_column(String(66), nullable=False)
+    token_id: Mapped[str] = mapped_column(String(100), nullable=False)
     outcome: Mapped[str] = mapped_column(String(50), nullable=False)
 
     # Position data
@@ -237,7 +237,7 @@ class PositionSnapshot(Base):
         BigInteger, ForeignKey("trader_positions.id"), nullable=False
     )
     trader_wallet: Mapped[str] = mapped_column(String(42), nullable=False)
-    token_id: Mapped[str] = mapped_column(String(66), nullable=False)
+    token_id: Mapped[str] = mapped_column(String(100), nullable=False)
 
     size: Mapped[float] = mapped_column(Numeric(18, 6), nullable=False)
     current_price: Mapped[float | None] = mapped_column(Numeric(10, 6))
@@ -270,7 +270,7 @@ class CopySignal(Base):
     # Signal details
     signal_type: Mapped[str] = mapped_column(String(20), nullable=False)
     condition_id: Mapped[str] = mapped_column(String(66), nullable=False)
-    token_id: Mapped[str] = mapped_column(String(66), nullable=False)
+    token_id: Mapped[str] = mapped_column(String(100), nullable=False)
     outcome: Mapped[str] = mapped_column(String(50), nullable=False)
 
     # Change details
@@ -316,7 +316,7 @@ class CopyOrder(Base):
 
     # Order details
     order_type: Mapped[str] = mapped_column(String(10), nullable=False)
-    token_id: Mapped[str] = mapped_column(String(66), nullable=False)
+    token_id: Mapped[str] = mapped_column(String(100), nullable=False)
     side: Mapped[str] = mapped_column(String(4), nullable=False)
     requested_size: Mapped[float] = mapped_column(Numeric(18, 6), nullable=False)
     requested_price: Mapped[float | None] = mapped_column(Numeric(10, 6))

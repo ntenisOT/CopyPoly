@@ -19,10 +19,10 @@
 
 ## Phase 4: Copy Trading Engine
 
-- [ ] 4.1 Signal detection (position diffing)
-- [ ] 4.2 Position sizing algorithm
-- [ ] 4.3 Paper trading execution
-- [ ] 4.4 Live trading execution
+- [x] 4.1 Signal detection (position diffing — NEW/ADD/REDUCE/CLOSE)
+- [x] 4.2 Position sizing algorithm (integrated into engine)
+- [x] 4.3 Paper trading execution (PaperExecutor with slippage sim)
+- [ ] 4.4 Live trading execution (CLOB API — stubbed, needs wallet setup)
 
 ## Phase 5: Dashboard
 
@@ -35,3 +35,11 @@
 - [ ] 6.1 Unit & integration tests
 - [ ] 6.2 CI/CD pipeline
 - [ ] 6.3 Monitoring & alerts
+
+## Phase 7: Historical Data Lake & Advanced Analysis
+
+- [ ] 7.1 Full trade history crawler (all leaderboard traders → local DB)
+- [ ] 7.2 Rising star detector (new traders with sudden high win rates)
+- [ ] 7.3 Insider pattern detector (traders who enter before big moves)
+- [ ] 7.4 Seasonal/category pattern analysis
+- [ ] 7.5 Comprehensive offline backtester (all traders, all periods)
