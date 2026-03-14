@@ -28,7 +28,7 @@
 
 - [x] 5.1 FastAPI REST API (12 endpoints: overview, traders, positions, signals, config CRUD, backtest trigger)
 - [x] 5.2 SPA Frontend (dark theme, 6 pages: overview, traders, positions, signals, backtest, settings)
-- [ ] 5.3 TradingView charts (deferred — needs more time-series data)
+- [x] 5.3 TradingView charts (Lightweight Charts: equity curve + drawdown + trade markers, simulated data fallback)
 
 ## Phase 6: Testing & Deployment
 

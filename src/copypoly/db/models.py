@@ -390,3 +390,71 @@ class AppConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default="now()"
     )
+
+
+# ============================================================
+# 10. trade_history — Historical Trade Activities (Phase 7)
+# ============================================================
+class TradeHistory(Base):
+    """Historical trade activity record from Polymarket Data API.
+
+    Crawled via /activity endpoint. Uses UPSERT (ON CONFLICT DO NOTHING)
+    to support idempotent re-crawling without data loss.
+    """
+
+    __tablename__ = "trade_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    trader_wallet: Mapped[str] = mapped_column(String(42), nullable=False)
+
+    # Trade details
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    condition_id: Mapped[str | None] = mapped_column(String(100))
+    trade_type: Mapped[str] = mapped_column(String(20), nullable=False)  # TRADE, SPLIT, MERGE, REDEEM
+    side: Mapped[str | None] = mapped_column(String(4))  # BUY, SELL
+    size: Mapped[float | None] = mapped_column(Numeric(20, 6))
+    usdc_size: Mapped[float | None] = mapped_column(Numeric(20, 6))
+    price: Mapped[float | None] = mapped_column(Numeric(10, 6))
+    asset: Mapped[str | None] = mapped_column(String(100))
+    outcome_index: Mapped[int | None] = mapped_column(Integer)
+    outcome: Mapped[str | None] = mapped_column(String(50))
+    transaction_hash: Mapped[str | None] = mapped_column(String(66))
+
+    # Denormalized market info (from API response, for quick display)
+    market_title: Mapped[str | None] = mapped_column(Text)
+    market_slug: Mapped[str | None] = mapped_column(String(200))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "trader_wallet", "transaction_hash", "asset",
+            name="uq_trade_history_tx",
+        ),
+        Index("idx_th_trader", trader_wallet),
+        Index("idx_th_timestamp", timestamp),
+        Index("idx_th_trader_time", trader_wallet, timestamp),
+        Index("idx_th_condition", condition_id),
+        Index("idx_th_type", trade_type),
+    )
+
+
+# ============================================================
+# 11. crawl_progress — Track crawler state per trader (Phase 7)
+# ============================================================
+class CrawlProgress(Base):
+    """Tracks how far we've crawled each trader's history.
+
+    Enables incremental crawling: on re-run, only fetch new activities.
+    """
+
+    __tablename__ = "crawl_progress"
+
+    trader_wallet: Mapped[str] = mapped_column(String(42), primary_key=True)
+    activities_crawled: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    oldest_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    newest_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(
+        String(20), default="PENDING", server_default="'PENDING'"
+    )  # PENDING, RUNNING, COMPLETE, ERROR
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -97,8 +97,11 @@
 - GPG signing is disabled for this repo
 
 ### Docker Commands
-- Start: `docker compose up --build -d`
-- Nuke & rebuild: `docker compose down -v && docker compose up --build -d`
+- **Restart (safe, preserves data)**: `docker compose down && docker compose up --build -d`
+- **Nuke & rebuild (DESTROYS ALL DATA)**: `docker compose down -v && docker compose up --build -d`
+  - ⚠️ **NEVER use `-v` if historical data has been crawled** — backup first!
 - Logs: `docker compose logs -f app`
 - DB shell: `docker compose exec -e PAGER=cat db psql -U copypoly -d copypoly`
 - New migration: `docker compose run --rm app python -m alembic revision --autogenerate -m "description"`
+- **Backup DB**: `docker compose exec db pg_dump -U copypoly copypoly > backup_$(date +%Y%m%d).sql`
+- **Restore DB**: `docker compose exec -T db psql -U copypoly copypoly < backup.sql`
