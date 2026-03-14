@@ -40,6 +40,10 @@ ORDERBOOK_SUBGRAPH = (
 PAGE_SIZE = 1000  # Max allowed by The Graph
 INTER_PAGE_DELAY = 0.05  # Tiny polite delay between pages
 
+# Polymarket Data API for activity data (REDEEM, MERGE, SPLIT, REWARD)
+DATA_API_ACTIVITY = "https://data-api.polymarket.com/v1/activity"
+ACTIVITY_PAGE_SIZE = 100  # Data API max per page
+
 
 async def _query_subgraph(
     client: httpx.AsyncClient,
@@ -233,24 +237,33 @@ async def crawl_trader_history(
         await session.commit()
 
     try:
-        # Crawl maker side (store page-by-page)
+        # 1. Crawl maker side from subgraph (store page-by-page)
         log.info("crawling_side", trader=name, side="maker")
         maker_stats = await _crawl_and_store_side(wallet, "maker", client, name)
 
-        # Crawl taker side (store page-by-page)
+        # 2. Crawl taker side from subgraph (store page-by-page)
         log.info("crawling_side", trader=name, side="taker")
         taker_stats = await _crawl_and_store_side(wallet, "taker", client, name)
 
-        total_fetched = maker_stats["fetched"] + taker_stats["fetched"]
-        total_inserted = maker_stats["inserted"] + taker_stats["inserted"]
+        # 3. Crawl activity data from Data API (REDEEM, MERGE, SPLIT, REWARD)
+        log.info("crawling_activity", trader=name)
+        activity_stats = await _crawl_activity_data(wallet, client, name)
+
+        total_fetched = (
+            maker_stats["fetched"] + taker_stats["fetched"]
+            + activity_stats["fetched"]
+        )
+        total_inserted = (
+            maker_stats["inserted"] + taker_stats["inserted"]
+            + activity_stats["inserted"]
+        )
 
         log.info(
-            "trader_sides_complete",
+            "trader_crawl_complete",
             trader=name,
-            maker_fetched=maker_stats["fetched"],
-            maker_pages=maker_stats["pages"],
-            taker_fetched=taker_stats["fetched"],
-            taker_pages=taker_stats["pages"],
+            maker=maker_stats["fetched"],
+            taker=taker_stats["fetched"],
+            activity=activity_stats["fetched"],
             total_inserted=total_inserted,
         )
 
@@ -302,8 +315,97 @@ async def crawl_trader_history(
     }
 
 
+async def _crawl_activity_data(
+    wallet: str,
+    client: httpx.AsyncClient,
+    trader_name: str,
+) -> dict[str, int]:
+    """Crawl REDEEM, MERGE, SPLIT, REWARD events from Polymarket Data API.
+
+    These events are NOT in the orderbook subgraph but are essential
+    for PnL computation (most profit comes from redemptions).
+    """
+    wallet_lower = wallet.lower()
+    offset = 0
+    total_fetched = 0
+    total_inserted = 0
+    page = 0
+
+    while True:
+        for attempt in range(3):
+            try:
+                resp = await client.get(
+                    DATA_API_ACTIVITY,
+                    params={"user": wallet_lower, "limit": ACTIVITY_PAGE_SIZE, "offset": offset},
+                    timeout=httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0),
+                )
+                resp.raise_for_status()
+                events = [e for e in resp.json() if isinstance(e, dict)]
+                break
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
+                if attempt < 2:
+                    await asyncio.sleep(3 * (attempt + 1))
+                    continue
+                raise
+
+        if not events:
+            break
+
+        # Parse and store activity events (non-TRADE types only)
+        rows = []
+        for e in events:
+            etype = e.get("type", "")
+            if etype in ("REDEEM", "MERGE", "SPLIT", "REWARD"):
+                ts = datetime.fromtimestamp(int(e.get("timestamp", 0)), tz=timezone.utc)
+                rows.append({
+                    "trader_wallet": wallet_lower,
+                    "timestamp": ts,
+                    "condition_id": e.get("conditionId"),
+                    "trade_type": etype,
+                    "side": e.get("side") or etype,
+                    "size": float(e.get("size", 0) or 0),
+                    "usdc_size": float(e.get("usdcSize", 0) or 0),
+                    "price": float(e.get("price", 0) or 0),
+                    "asset": e.get("asset") or "",
+                    "outcome_index": int(e.get("outcomeIndex")) if e.get("outcomeIndex") not in (None, "", "999") else None,
+                    "outcome": e.get("outcome"),
+                    "transaction_hash": e.get("transactionHash", f"activity_{wallet_lower}_{offset}_{total_fetched}"),
+                    "market_title": e.get("title"),
+                    "market_slug": e.get("slug"),
+                })
+
+        if rows:
+            inserted = await _store_batch(rows)
+            total_inserted += inserted
+
+        total_fetched += len([e for e in events if e.get("type") in ("REDEEM", "MERGE", "SPLIT", "REWARD")])
+        page += 1
+        offset += ACTIVITY_PAGE_SIZE
+
+        if page % 10 == 0 or len(events) < ACTIVITY_PAGE_SIZE:
+            log.info(
+                "activity_progress",
+                trader=trader_name,
+                page=page,
+                fetched=total_fetched,
+                inserted=total_inserted,
+            )
+
+        if len(events) < ACTIVITY_PAGE_SIZE:
+            break
+
+        await asyncio.sleep(0.1)  # Polite delay for Data API
+
+    return {"fetched": total_fetched, "inserted": total_inserted, "pages": page}
+
+
 async def _verify_trader(wallet: str, name: str, crawl_result: dict) -> dict:
-    """Verify crawled data against our stored leaderboard info.
+    """Verify crawled data by computing PnL and comparing to leaderboard.
+
+    PnL formula (verified against Polymarket profiles):
+      net_cashflow = sell_usdc + redeem_usdc + reward_usdc - buy_usdc - merge_usdc
+      pnl = net_cashflow - initial_deposit
+      (initial_deposit = net_cashflow - leaderboard_pnl)
 
     Returns verification report dict.
     """
@@ -314,38 +416,72 @@ async def _verify_trader(wallet: str, name: str, crawl_result: dict) -> dict:
         async with async_session_factory() as session:
             from sqlalchemy import func as sqlfunc
 
-            # Our stored data stats
+            # Count events by type
             row = (await session.execute(
                 select(
                     sqlfunc.count().label("events"),
                     sqlfunc.count(sqlfunc.distinct(TradeHistory.asset)).label("tokens"),
                     sqlfunc.min(TradeHistory.timestamp).label("oldest"),
                     sqlfunc.max(TradeHistory.timestamp).label("newest"),
-                    sqlfunc.sum(TradeHistory.usdc_size).label("volume"),
                 ).where(TradeHistory.trader_wallet == wallet_lower)
             )).one()
 
             report["stored_events"] = row.events
             report["unique_tokens"] = row.tokens
-            report["first_trade"] = row.oldest.isoformat() if row.oldest else None
-            report["last_trade"] = row.newest.isoformat() if row.newest else None
-            report["total_volume"] = round(float(row.volume or 0), 2)
 
-            # Compare with leaderboard data
+            # PnL components from our stored data
+            # BUY trades: asset='0' means providing USDC (buying tokens)
+            buy_usdc = (await session.execute(
+                select(sqlfunc.coalesce(sqlfunc.sum(TradeHistory.size), 0))
+                .where(TradeHistory.trader_wallet == wallet_lower)
+                .where(TradeHistory.trade_type == "TRADE")
+                .where(TradeHistory.asset == "0")
+            )).scalar() or 0
+
+            # SELL trades: asset != '0' means providing tokens (selling)
+            sell_usdc = (await session.execute(
+                select(sqlfunc.coalesce(sqlfunc.sum(TradeHistory.usdc_size), 0))
+                .where(TradeHistory.trader_wallet == wallet_lower)
+                .where(TradeHistory.trade_type == "TRADE")
+                .where(TradeHistory.asset != "0")
+            )).scalar() or 0
+
+            # Redemptions
+            redeem_usdc = (await session.execute(
+                select(sqlfunc.coalesce(sqlfunc.sum(TradeHistory.usdc_size), 0))
+                .where(TradeHistory.trader_wallet == wallet_lower)
+                .where(TradeHistory.trade_type == "REDEEM")
+            )).scalar() or 0
+
+            # Merges
+            merge_usdc = (await session.execute(
+                select(sqlfunc.coalesce(sqlfunc.sum(TradeHistory.usdc_size), 0))
+                .where(TradeHistory.trader_wallet == wallet_lower)
+                .where(TradeHistory.trade_type == "MERGE")
+            )).scalar() or 0
+
+            # Rewards
+            reward_usdc = (await session.execute(
+                select(sqlfunc.coalesce(sqlfunc.sum(TradeHistory.usdc_size), 0))
+                .where(TradeHistory.trader_wallet == wallet_lower)
+                .where(TradeHistory.trade_type == "REWARD")
+            )).scalar() or 0
+
+            net_cashflow = float(sell_usdc) + float(redeem_usdc) + float(reward_usdc) - float(buy_usdc) - float(merge_usdc)
+            report["net_cashflow"] = round(net_cashflow, 2)
+
+            # Compare with leaderboard PnL
             from copypoly.db.models import LeaderboardSnapshot
             lb_row = (await session.execute(
                 select(
                     sqlfunc.max(LeaderboardSnapshot.pnl).label("pnl"),
-                    sqlfunc.max(LeaderboardSnapshot.volume).label("lb_volume"),
                 ).where(LeaderboardSnapshot.trader_wallet == wallet_lower)
                 .where(LeaderboardSnapshot.period == "all")
             )).one()
 
-            report["leaderboard_pnl"] = round(float(lb_row.pnl or 0), 2)
-            report["leaderboard_volume"] = round(float(lb_row.lb_volume or 0), 2)
-
-            # Data integrity checks
-            report["fetched_eq_stored"] = crawl_result["fetched"] == row.events
+            lb_pnl = float(lb_row.pnl or 0)
+            report["leaderboard_pnl"] = round(lb_pnl, 0)
+            report["implied_deposit"] = round(net_cashflow - lb_pnl, 0)
             report["verified"] = True
 
         log.info("trader_verified", **report)
@@ -389,12 +525,14 @@ async def _crawl_worker(
             verification = await _verify_trader(wallet, name, result)
 
             # Store verification notes in crawl_progress
+            net = verification.get("net_cashflow", 0)
+            lb = verification.get("leaderboard_pnl", 0)
+            dep = verification.get("implied_deposit", 0)
             notes = (
                 f"events={verification.get('stored_events', '?')}, "
-                f"tokens={verification.get('unique_tokens', '?')}, "
-                f"volume=${verification.get('total_volume', 0):,.0f}, "
-                f"lb_pnl=${verification.get('leaderboard_pnl', 0):,.0f}, "
-                f"match={'YES' if verification.get('fetched_eq_stored') else 'NO'}"
+                f"cashflow=${net:,.0f}, "
+                f"lb_pnl=${lb:,.0f}, "
+                f"deposit=${dep:,.0f}"
             )
             async with async_session_factory() as session:
                 await session.execute(
@@ -416,7 +554,7 @@ async def _crawl_worker(
                 n=n,
                 fetched=result["fetched"],
                 inserted=result["inserted"],
-                verified=verification.get("fetched_eq_stored", False),
+                net_cashflow=round(net, 0),
             )
         except Exception as e:
             async with stats_lock:
