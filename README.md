@@ -38,7 +38,7 @@ docker compose logs -f app
 open http://localhost:8000
 ```
 
-### Backfill Mode (collect historical data)
+### Data Collection
 
 ```bash
 # Step 1: Collect traders from Polymarket leaderboard
@@ -47,13 +47,21 @@ curl -X POST http://localhost:8000/api/collect
 # Step 2: Score all traders
 curl -X POST http://localhost:8000/api/score
 
-# Step 3: Start the historical crawl (runs in background)
+# Step 3: Crawl all trader history (incremental, 20 parallel workers)
 curl -X POST http://localhost:8000/api/crawl \
   -H "Content-Type: application/json" \
-  -d '{"top_n": 5000, "skip_complete": true}'
+  -d '{"max_workers": 20}'
 
 # Step 4: Monitor progress
 curl http://localhost:8000/api/crawl/progress
+
+# To update existing data (fetches only new trades since last crawl)
+curl -X POST http://localhost:8000/api/crawl
+
+# To wipe everything and re-crawl from scratch
+curl -X POST http://localhost:8000/api/crawl \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "resync"}'
 ```
 
 ---
@@ -133,7 +141,8 @@ copypoly/
 |--------|----------|-------------|
 | `POST` | `/api/collect` | Trigger leaderboard collection (1,000+ traders) |
 | `POST` | `/api/score` | Score and rank all traders |
-| `POST` | `/api/crawl` | Start historical trade crawl (subgraph) |
+| `POST` | `/api/crawl` | Crawl/update trade history (incremental by default) |
+| `POST` | `/api/crawl` `{"mode":"resync"}` | Wipe DB + full re-crawl from scratch |
 | `GET` | `/api/crawl/progress` | Monitor crawl progress (real-time) |
 | `GET` | `/api/overview` | Dashboard summary stats |
 | `GET` | `/api/traders` | List scored traders with rankings |
@@ -243,12 +252,14 @@ See [`.agents/tasks/todo.md`](.agents/tasks/todo.md) for the full task tracker.
 - [x] Phase 5: Dashboard
 - [ ] Phase 6: Testing & CI/CD
 - [ ] **Phase 7: Historical Data Lake** ← current
-  - [x] 7.1 Subgraph trade history crawler (page-by-page)
-  - [ ] 7.2 Activity data (splits/merges/redemptions)
-  - [ ] 7.3 Market context (OI + volume)
-  - [ ] 7.4 Computed PnL
-  - [ ] 7.5 Backtesting engine
-  - [ ] 7.6 Advanced analysis (insider detection, rising stars)
+  - [x] 7.1 Subgraph trade history crawler (20 parallel workers)
+  - [x] 7.2 Activity data (splits/merges/redemptions)
+  - [x] 7.3 Per-market PnL verification (22/22 Theo4, 50/50 Fredi9999)
+  - [x] 7.4 Incremental updates (timestamp-based, 5-day safety buffer)
+  - [x] 7.5 Auto-retry failed traders (2 rounds)
+  - [ ] 7.6 Market context (OI + volume)
+  - [ ] 7.7 Backtesting engine
+  - [ ] 7.8 Advanced analysis (insider detection, rising stars)
 
 ---
 

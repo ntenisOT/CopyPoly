@@ -22,20 +22,32 @@ router = APIRouter(prefix="/api", tags=["history"])
 
 
 class CrawlRequest(BaseModel):
-    top_n: int = 500
-    skip_complete: bool = True
+    top_n: int = 9999
+    mode: str = "crawl"       # "crawl" = incremental, "resync" = wipe DB + full re-crawl
+    max_workers: int = 20
 
 
 # Background crawl task reference
 _crawl_task: asyncio.Task | None = None
 
 
-async def _run_crawl_background(top_n: int, skip_complete: bool):
+async def _run_crawl_background(top_n: int, mode: str, max_workers: int = 20):
     """Run the crawl in background (not blocking the API response)."""
     from copypoly.collectors.history_crawler import crawl_all_history
 
     try:
-        await crawl_all_history(top_n=top_n, skip_complete=skip_complete)
+        if mode == "resync":
+            # Wipe all trade data and crawl progress
+            async with async_session_factory() as session:
+                await session.execute(TradeHistory.__table__.delete())
+                await session.execute(CrawlProgress.__table__.delete())
+                await session.commit()
+            log.info("resync_wiped_db")
+
+        # Always incremental: skip_complete=False so everyone gets crawled,
+        # but resume_ts from newest_timestamp means only new data is fetched.
+        # After resync, newest_timestamp is NULL so it fetches everything.
+        await crawl_all_history(top_n=top_n, skip_complete=False, max_workers=max_workers)
     except Exception as e:
         log.error("background_crawl_failed", error=str(e))
 
@@ -44,7 +56,9 @@ async def _run_crawl_background(top_n: int, skip_complete: bool):
 async def trigger_crawl(body: CrawlRequest) -> dict:
     """Start the historical trade crawler in the background.
 
-    Uses Polymarket's Goldsky subgraph (on-chain data).
+    mode='crawl': Incremental update. Fetches new data since last crawl.
+    mode='resync': Wipes all trade data and re-crawls everything from scratch.
+
     Returns immediately — monitor progress via GET /api/crawl/progress.
     """
     global _crawl_task
@@ -53,14 +67,14 @@ async def trigger_crawl(body: CrawlRequest) -> dict:
         return {"status": "already_running", "message": "Crawl is already in progress"}
 
     _crawl_task = asyncio.create_task(
-        _run_crawl_background(body.top_n, body.skip_complete)
+        _run_crawl_background(body.top_n, body.mode, body.max_workers)
     )
 
     return {
         "status": "started",
         "source": "subgraph",
         "top_n": body.top_n,
-        "skip_complete": body.skip_complete,
+        "mode": body.mode,
     }
 
 

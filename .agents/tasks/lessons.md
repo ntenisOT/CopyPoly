@@ -154,3 +154,17 @@ Log of corrections and patterns to prevent recurring mistakes.
 - **Fix**: Fetch the condition list from PM's `closed-positions` API, then query `redemptions(redeemer: wallet, condition: cond)` per-condition — exactly as verified in `verify_full_account.py`.
 - **Verified**: This approach gets 12/12 redeems for Theo4 ($41.3M), matching Phase 2 perfectly.
 - **Trap**: Removing the `redeemer` filter to "catch NegRisk" causes storing ALL redeems for those conditions (1400+ from random users). Always filter by redeemer.
+
+## 2026-03-14: Use per-market PnL calculator for verification, not cashflow
+- **Problem**: Global cashflow formula (`sell + redeem - buy - merge = net → pnl = net - deposit`) gives false negatives for traders with open positions.
+- **Fix**: Use the exact per-market PnL calculator from `verify_full_account.py` — processes all events through `PositionTracker`, compares per-position to PM's `closed-positions` API.
+- **Result**: 22/22 Theo4 ($73 delta on $22M), 50/50 Fredi9999 ($24 delta on $18.6M). All rounding errors from integer division.
+
+## 2026-03-15: Don't use MAX() on hex subgraph IDs for resume cursors
+- **Problem**: Subgraph event IDs are hex strings (`0xabc..._0xdef...`). SQL `MAX()` returns the lexicographically largest, NOT the chronologically latest. Using this as `id_gt` cursor skips events with smaller hex IDs that occurred later.
+- **Fix**: Use `timestamp_gte` with the `newest_timestamp` from `crawl_progress` minus a 5-day safety buffer. Dedup (`on_conflict_do_nothing`) handles the overlap.
+
+## 2026-03-15: Incremental crawl design
+- **Pattern**: Always crawl incrementally by default. Read `newest_timestamp` from `crawl_progress`, subtract 5 days, use `timestamp_gte` in subgraph queries.
+- **Modes**: `crawl` (default, incremental) and `resync` (wipe DB + full re-crawl).
+- **Safety**: Dedup constraint on `transaction_hash` ensures re-fetching overlap events is harmless.

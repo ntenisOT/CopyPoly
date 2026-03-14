@@ -443,7 +443,8 @@ class TradeHistory(Base):
 class CrawlProgress(Base):
     """Tracks how far we've crawled each trader's history.
 
-    Enables incremental crawling: on re-run, only fetch new activities.
+    Enables incremental crawling: on re-run, uses newest_timestamp
+    to resume from where we left off with timestamp_gte queries.
     """
 
     __tablename__ = "crawl_progress"

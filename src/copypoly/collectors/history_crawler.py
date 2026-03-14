@@ -128,9 +128,12 @@ async def _crawl_and_store_side(
     side: str,
     client: httpx.AsyncClient,
     trader_name: str,
+    resume_from_ts: int = 0,
 ) -> dict[str, int]:
     """Crawl one side (maker/taker) and store PAGE BY PAGE.
 
+    If resume_from_ts > 0, only fetches events with timestamp >= that value.
+    Dedup on insert handles overlap at the boundary.
     Returns dict with total_fetched, total_inserted, pages.
     """
     wallet_lower = wallet.lower()
@@ -138,6 +141,9 @@ async def _crawl_and_store_side(
     total_fetched = 0
     total_inserted = 0
     page = 0
+    ts_filter = f', timestamp_gte: {resume_from_ts}' if resume_from_ts > 0 else ""
+    if resume_from_ts > 0:
+        log.info("resuming_from_ts", trader=trader_name, side=side, timestamp=resume_from_ts)
 
     while True:
         query = f"""{{
@@ -145,7 +151,7 @@ async def _crawl_and_store_side(
     first: {PAGE_SIZE},
     orderBy: id,
     orderDirection: asc,
-    where: {{{side}: "{wallet_lower}", id_gt: "{last_id}"}}
+    where: {{{side}: "{wallet_lower}", id_gt: "{last_id}"{ts_filter}}}
   ) {{
     id
     timestamp
@@ -245,17 +251,36 @@ async def crawl_trader_history(
         await session.commit()
 
     try:
+        # Get resume timestamp from DB (for incremental updates)
+        # Subtract 5 days as safety buffer; dedup handles overlap
+        resume_ts = 0
+        try:
+            async with async_session_factory() as session:
+                cp = (await session.execute(
+                    select(CrawlProgress.newest_timestamp)
+                    .where(CrawlProgress.trader_wallet == wallet_lower)
+                )).scalar()
+                if cp:
+                    from datetime import timedelta
+                    buffer = cp - timedelta(days=5)
+                    resume_ts = int(buffer.timestamp())
+                    log.info("incremental_resume", trader=name,
+                             newest=cp.isoformat(), resume_from=buffer.isoformat())
+        except Exception:
+            pass  # Fresh crawl if DB query fails
+
         # 1. Crawl maker side from subgraph (store page-by-page)
         log.info("crawling_side", trader=name, side="maker")
-        maker_stats = await _crawl_and_store_side(wallet, "maker", client, name)
+        maker_stats = await _crawl_and_store_side(wallet, "maker", client, name, resume_ts)
 
         # 2. Crawl taker side from subgraph (store page-by-page)
         log.info("crawling_side", trader=name, side="taker")
-        taker_stats = await _crawl_and_store_side(wallet, "taker", client, name)
+        taker_stats = await _crawl_and_store_side(wallet, "taker", client, name, resume_ts)
 
-        # 3. Crawl activity data from Data API (REDEEM, MERGE, SPLIT, REWARD)
+        # 3. Crawl activity data (MERGE, SPLIT, REDEEM)
+        # Redeems are always re-fetched per-condition (few events, dedup safe)
         log.info("crawling_activity", trader=name)
-        activity_stats = await _crawl_activity_data(wallet, client, name)
+        activity_stats = await _crawl_activity_data(wallet, client, name, resume_ts)
 
         total_fetched = (
             maker_stats["fetched"] + taker_stats["fetched"]
@@ -327,11 +352,13 @@ async def _crawl_activity_data(
     wallet: str,
     client: httpx.AsyncClient,
     trader_name: str,
+    resume_from_ts: int = 0,
 ) -> dict[str, int]:
     """Crawl MERGE, SPLIT, REDEMPTION events from Polymarket Activity Subgraph.
 
     Uses on-chain activity subgraph (not Data API) for complete data
     with no offset limits. This is critical for accurate PnL computation.
+    If resume_from_ts > 0, only fetches events with timestamp >= that value.
     """
     wallet_lower = wallet.lower()
     total_fetched = 0
@@ -343,6 +370,7 @@ async def _crawl_activity_data(
         "subgraphs/activity-subgraph/0.0.3/gn"
     )
     timeout = httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0)
+    ts_filter = f', timestamp_gte: {resume_from_ts}' if resume_from_ts > 0 else ""
 
     # ── 1. Merges ──
     last_id = ""
@@ -351,7 +379,7 @@ async def _crawl_activity_data(
         for attempt in range(3):
             try:
                 resp = await client.post(activity_sg, json={"query": f"""{{
-                    merges(first:1000, where:{{stakeholder:"{wallet_lower}", id_gt:"{last_id}"}}, orderBy:id) {{
+                    merges(first:1000, where:{{stakeholder:"{wallet_lower}", id_gt:"{last_id}"{ts_filter}}}, orderBy:id) {{
                         id timestamp condition amount
                     }}
                 }}"""}, timeout=timeout)
@@ -407,7 +435,7 @@ async def _crawl_activity_data(
         for attempt in range(3):
             try:
                 resp = await client.post(activity_sg, json={"query": f"""{{
-                    splits(first:1000, where:{{stakeholder:"{wallet_lower}", id_gt:"{last_id}"}}, orderBy:id) {{
+                    splits(first:1000, where:{{stakeholder:"{wallet_lower}", id_gt:"{last_id}"{ts_filter}}}, orderBy:id) {{
                         id timestamp condition amount
                     }}
                 }}"""}, timeout=timeout)
@@ -907,9 +935,9 @@ async def _crawl_worker(
 
 
 async def crawl_all_history(
-    top_n: int = 500,
+    top_n: int = 9999,
     skip_complete: bool = True,
-    max_workers: int = 10,
+    max_workers: int = 20,
 ) -> dict[str, Any]:
     """Crawl trade history for the top N traders via subgraph.
 
@@ -969,6 +997,55 @@ async def crawl_all_history(
             for i, (wallet, username) in enumerate(traders)
         ]
         await asyncio.gather(*tasks)
+
+    # ── Auto-retry failed traders (up to 2 retries) ──
+    for retry_round in range(1, 3):
+        async with async_session_factory() as session:
+            failed = (await session.execute(
+                select(CrawlProgress.trader_wallet)
+                .where(CrawlProgress.status == "ERROR")
+            )).scalars().all()
+
+        if not failed:
+            break
+
+        log.info("retry_starting", round=retry_round, failed=len(failed))
+
+        # Reset status so workers pick them up
+        async with async_session_factory() as session:
+            await session.execute(
+                update(CrawlProgress)
+                .where(CrawlProgress.status == "ERROR")
+                .values(status="PENDING", error_message=None)
+            )
+            await session.commit()
+
+        # Look up usernames
+        async with async_session_factory() as session:
+            retry_traders = (await session.execute(
+                select(Trader.wallet, Trader.username)
+                .where(Trader.wallet.in_(failed))
+            )).all()
+
+        retry_sem = asyncio.Semaphore(5)  # fewer workers for retries
+        async with httpx.AsyncClient() as client:
+            retry_tasks = [
+                _crawl_worker(
+                    semaphore=retry_sem,
+                    wallet=w,
+                    username=u or "",
+                    worker_id=(i % 5) + 1,
+                    n=i + 1,
+                    total=len(retry_traders),
+                    client=client,
+                    stats=stats,
+                    stats_lock=stats_lock,
+                )
+                for i, (w, u) in enumerate(retry_traders)
+            ]
+            await asyncio.gather(*retry_tasks)
+
+        log.info("retry_complete", round=retry_round)
 
     log.info("crawl_complete", **stats)
     return stats
