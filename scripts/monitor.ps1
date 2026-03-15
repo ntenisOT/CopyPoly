@@ -68,30 +68,32 @@ while ($true) {
 
     # Recent completions
     Write-Host ""
-    Write-Host "  ----- Recent -----" -ForegroundColor DarkGray
-    $recent = $p.recent | Where-Object { $_.status -eq "COMPLETE" } | Select-Object -First 5
+    Write-Host "  ----- Recent Completions -----" -ForegroundColor DarkGray
+    $recent = $p.recent | Select-Object -First 5
     foreach ($r in $recent) {
-        $w = $r.wallet
+        $name = $r.trader
+        $evts = $r.events
         $n = $r.notes
-        if ($n -match "^\[OK\]") {
-            Write-Host "  $w  " -NoNewline; Write-Host $n -ForegroundColor Green
-        } elseif ($n -match "^\[WARN\]") {
-            Write-Host "  $w  " -NoNewline; Write-Host $n -ForegroundColor Yellow
+        if ($r.status -eq "OK") {
+            Write-Host "  $name " -NoNewline; Write-Host "($evts events) $n" -ForegroundColor Green
         } else {
-            Write-Host "  $w  $n"
+            Write-Host "  $name " -NoNewline; Write-Host "($evts events) $n" -ForegroundColor Yellow
         }
+    }
+    if (-not $recent) {
+        Write-Host "  (waiting for first completions...)" -ForegroundColor DarkGray
     }
 
     # Exit check
     if (-not $p.is_running -and $done -gt 0) {
         Write-Host ""
         Write-Host "  *** CRAWL COMPLETE ***" -ForegroundColor Green
-        Write-Host "  $done traders, ${storedK}K events, $errors errors"
+        Write-Host "  $done traders, ${crawledK}K events, $errors errors"
         Write-Host ""
         break
     }
 
     Write-Host ""
-    Write-Host "  Refreshing in 60s... (Ctrl+C to stop)" -ForegroundColor DarkGray
-    Start-Sleep 60
+    Write-Host "  Refreshing in 10s... (Ctrl+C to stop)" -ForegroundColor DarkGray
+    Start-Sleep 10
 }

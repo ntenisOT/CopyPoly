@@ -161,14 +161,14 @@ async def _crawl_side(
   }}
 }}"""
         events = None
-        for attempt in range(3):
+        for attempt in range(10):
             try:
                 data = await _query_subgraph(client, query)
                 events = data.get("orderFilledEvents", [])
                 break
             except (RuntimeError, httpx.TimeoutException, httpx.HTTPStatusError) as e:
-                if attempt < 2:
-                    wait = 3 * (attempt + 1)
+                if attempt < 9:
+                    wait = min(2 ** (attempt + 1), 30)  # 2,4,8,16,30,30...
                     log.warning(
                         "subgraph_retry",
                         attempt=attempt + 1,
@@ -957,6 +957,15 @@ async def _crawl_worker(
                     stats["warn"] = stats.get("warn", 0) + 1
                 if resync_attempts > 0:
                     stats["resynced"] = stats.get("resynced", 0) + 1
+                # Track recent completions for monitor
+                recent = stats.get("recent", [])
+                recent.insert(0, {
+                    "trader": name,
+                    "status": "OK" if sane else "WARN",
+                    "events": result["fetched"],
+                    "notes": notes,
+                })
+                stats["recent"] = recent[:10]  # Keep last 10
 
             log.info(
                 "trader_crawled",

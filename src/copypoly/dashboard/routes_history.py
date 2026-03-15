@@ -118,6 +118,7 @@ async def get_crawl_progress() -> dict:
         "total_activities_crawled": s.get("total_activities", 0),
         "total_activities_stored": s.get("total_inserted", 0),
         "progress_pct": round((completed / total) * 100, 1) if total > 0 else 0,
+        "recent": s.get("recent", []),
     }
 
 
