@@ -33,6 +33,7 @@ htmlcov/
 
 # Docker volumes (local data)
 docker-data/
+data/
 
 # Database backups (large SQL dumps)
 backups/*.sql

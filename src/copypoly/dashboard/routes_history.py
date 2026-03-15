@@ -25,7 +25,7 @@ class CrawlRequest(BaseModel):
     top_n: int = 9999
     mode: str = "crawl"            # "crawl" = incremental, "resync" = wipe DB + full re-crawl
     max_workers: int = 20
-    delta_threshold: float = 100   # $ tolerance for auto-resync (0 = disable auto-resync)
+    delta_threshold: float = 0.001  # 0.1% PnL tolerance for auto-resync (0 = disable)
 
 
 # Background crawl task reference
