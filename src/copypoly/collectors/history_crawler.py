@@ -38,7 +38,7 @@ ORDERBOOK_SUBGRAPH = (
     "subgraphs/orderbook-subgraph/0.0.1/gn"
 )
 PAGE_SIZE = 1000  # Max allowed by The Graph
-INTER_PAGE_DELAY = 0.05  # Tiny polite delay between pages
+INTER_PAGE_DELAY = 1.0  # 1s delay between pages to reduce subgraph pressure
 
 # Activity subgraph for merges, splits, redemptions
 ACTIVITY_SUBGRAPH = (
@@ -1236,7 +1236,7 @@ async def crawl_all_history(
     async with async_session_factory() as session:
         result = await session.execute(
             select(Trader.wallet, Trader.username)
-            .order_by(Trader.composite_score.desc().nulls_last())
+            .order_by(Trader.composite_score.asc().nulls_last())
             .limit(top_n)
         )
         traders = result.all()
@@ -1266,6 +1266,7 @@ async def crawl_all_history(
         "resynced": 0,
         "total_activities": 0,
         "total_inserted": 0,
+        "max_workers": max_workers,
     }
     # If live_stats provided, update it so the API can read it
     if live_stats is not None:

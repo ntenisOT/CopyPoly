@@ -29,16 +29,16 @@ while ($true) {
 
     # Counts
     $done = $p.complete
-    $running = $p.running
     $errors = $p.errors
     $total = $p.total_traders
     $remaining = $total - $done - $errors
 
     Write-Host "  Complete:    " -NoNewline; Write-Host "$done" -ForegroundColor Green -NoNewline; Write-Host " / $total traders"
-    Write-Host "  Running:     " -NoNewline; Write-Host "$running" -ForegroundColor Cyan
+    $workers = if ($p.max_workers) { $p.max_workers } else { $p.running }
+    Write-Host "  Workers:     " -NoNewline; Write-Host "$workers concurrent" -ForegroundColor Cyan
     Write-Host "  Errors:      " -NoNewline
     if ($errors -gt 0) { Write-Host "$errors" -ForegroundColor Red } else { Write-Host "0" -ForegroundColor Green }
-    Write-Host "  Remaining:   $remaining"
+    Write-Host "  Pending:     $remaining"
     Write-Host ""
 
     # Data
