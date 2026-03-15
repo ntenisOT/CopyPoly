@@ -25,7 +25,7 @@ import httpx
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from copypoly.db.models import CrawlProgress, TradeHistory, Trader
+from copypoly.db.models import CrawlProgress, CrawlRun, TradeHistory, Trader
 from copypoly.db.session import async_session_factory
 from copypoly.logging import get_logger
 
@@ -854,6 +854,11 @@ async def _verify_trader(wallet: str, name: str, crawl_result: dict) -> dict:
     except Exception as e:
         report["verified"] = False
         report["sane"] = False
+        report["positions_matched"] = "0/0"
+        report["calc_pnl"] = 0
+        report["pm_pnl"] = 0
+        report["leaderboard_pnl"] = 0
+        report["pnl_delta"] = 0
         report["error"] = str(e)[:200]
         log.warning("verification_failed", trader=name, error=str(e)[:100])
 
@@ -889,6 +894,48 @@ async def _crawl_worker(
 
             # Verify data after crawl
             verification = await _verify_trader(wallet, name, result)
+            sane = verification.get("sane", False)
+
+            # ── Auto-resync if verification fails with significant delta ──
+            DELTA_THRESHOLD = 100  # $100 tolerance
+            MAX_RESYNC = 3
+            resync_attempts = 0
+
+            while (
+                not sane
+                and abs(verification.get("pnl_delta", 0)) > DELTA_THRESHOLD
+                and resync_attempts < MAX_RESYNC
+            ):
+                resync_attempts += 1
+                log.warning(
+                    "auto_resync_triggered",
+                    trader=name,
+                    attempt=resync_attempts,
+                    delta=verification.get("pnl_delta", 0),
+                )
+
+                # Wipe this trader's trade_history and reset progress
+                async with async_session_factory() as session:
+                    await session.execute(
+                        TradeHistory.__table__.delete()
+                        .where(TradeHistory.trader_wallet == wallet.lower())
+                    )
+                    await session.execute(
+                        update(CrawlProgress)
+                        .where(CrawlProgress.trader_wallet == wallet.lower())
+                        .values(
+                            newest_timestamp=None,
+                            oldest_timestamp=None,
+                            activities_crawled=0,
+                            resync_count=resync_attempts,
+                        )
+                    )
+                    await session.commit()
+
+                # Re-crawl from scratch and re-verify
+                result = await crawl_trader_history(wallet, client, name)
+                verification = await _verify_trader(wallet, name, result)
+                sane = verification.get("sane", False)
 
             # Store verification notes in crawl_progress
             matched = verification.get("positions_matched", "?/?")
@@ -896,7 +943,7 @@ async def _crawl_worker(
             pm_pnl = verification.get("pm_pnl", 0)
             lb_pnl = verification.get("leaderboard_pnl", 0)
             delta = verification.get("pnl_delta", 0)
-            sane = verification.get("sane", False)
+            resync_tag = f" resync={resync_attempts}" if resync_attempts > 0 else ""
             notes = (
                 f"{'[OK]' if sane else '[WARN]'} "
                 f"matched={matched}, "
@@ -904,12 +951,13 @@ async def _crawl_worker(
                 f"pm=${pm_pnl:,.0f}, "
                 f"lb=${lb_pnl:,.0f}, "
                 f"delta=${delta:,.0f}"
+                f"{resync_tag}"
             )
             async with async_session_factory() as session:
                 await session.execute(
                     update(CrawlProgress)
                     .where(CrawlProgress.trader_wallet == wallet.lower())
-                    .values(error_message=notes)  # reuse field for notes when COMPLETE
+                    .values(error_message=notes, resync_count=resync_attempts)
                 )
                 await session.commit()
 
@@ -917,6 +965,12 @@ async def _crawl_worker(
                 stats["completed"] += 1
                 stats["total_activities"] += result["fetched"]
                 stats["total_inserted"] += result["inserted"]
+                if sane:
+                    stats["ok"] = stats.get("ok", 0) + 1
+                else:
+                    stats["warn"] = stats.get("warn", 0) + 1
+                if resync_attempts > 0:
+                    stats["resynced"] = stats.get("resynced", 0) + 1
 
             log.info(
                 "trader_crawled",
@@ -927,6 +981,7 @@ async def _crawl_worker(
                 inserted=result["inserted"],
                 matched=matched,
                 calc_pnl=round(calc_pnl, 0),
+                resyncs=resync_attempts,
             )
         except Exception as e:
             async with stats_lock:
@@ -964,6 +1019,7 @@ async def crawl_all_history(
             complete_set = set(complete)
             traders = [t for t in traders if t.wallet.lower() not in complete_set]
 
+    run_start = datetime.now(timezone.utc)
     log.info(
         "crawl_starting",
         total_traders=len(traders),
@@ -975,6 +1031,9 @@ async def crawl_all_history(
         "total_traders": len(traders),
         "completed": 0,
         "failed": 0,
+        "ok": 0,
+        "warn": 0,
+        "resynced": 0,
         "total_activities": 0,
         "total_inserted": 0,
     }
@@ -1046,6 +1105,34 @@ async def crawl_all_history(
             await asyncio.gather(*retry_tasks)
 
         log.info("retry_complete", round=retry_round)
+
+    # ── Record run summary ──
+    run_end = datetime.now(timezone.utc)
+    duration = int((run_end - run_start).total_seconds())
+    try:
+        async with async_session_factory() as session:
+            run = CrawlRun(
+                started_at=run_start,
+                completed_at=run_end,
+                mode="crawl",
+                total_traders=stats["total_traders"],
+                ok_count=stats.get("ok", 0),
+                warn_count=stats.get("warn", 0),
+                error_count=stats["failed"],
+                resync_count=stats.get("resynced", 0),
+                total_events=stats["total_activities"],
+                new_events=stats["total_inserted"],
+                duration_seconds=duration,
+                notes=(
+                    f"OK={stats.get('ok',0)}, WARN={stats.get('warn',0)}, "
+                    f"ERR={stats['failed']}, RESYNC={stats.get('resynced',0)}, "
+                    f"events={stats['total_inserted']:,} new"
+                ),
+            )
+            session.add(run)
+            await session.commit()
+    except Exception as e:
+        log.warning("run_summary_save_failed", error=str(e)[:100])
 
     log.info("crawl_complete", **stats)
     return stats

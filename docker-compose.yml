@@ -26,6 +26,16 @@ services:
       timeout: 3s
       retries: 10
     restart: unless-stopped
+    command: >
+      postgres
+      -c shared_buffers=8GB
+      -c effective_cache_size=22GB
+      -c work_mem=64MB
+      -c maintenance_work_mem=1GB
+    deploy:
+      resources:
+        limits:
+          memory: 30G
 
   # ------------------------------------------
   # Alembic Migrations (run-once, then exit)
@@ -65,6 +75,10 @@ services:
       migrations:
         condition: service_completed_successfully
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 5G
     volumes:
       # Mount source for hot-reload during development
       - ./src:/app/src:ro

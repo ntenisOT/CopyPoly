@@ -459,3 +459,27 @@ class CrawlProgress(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resync_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+# ============================================================
+# 12. crawl_runs — Summary of each crawl run (Phase 7)
+# ============================================================
+class CrawlRun(Base):
+    """Records the summary of each crawl/update run for audit trail."""
+
+    __tablename__ = "crawl_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    mode: Mapped[str] = mapped_column(String(20))  # crawl, resync
+    total_traders: Mapped[int] = mapped_column(Integer, default=0)
+    ok_count: Mapped[int] = mapped_column(Integer, default=0)
+    warn_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, default=0)
+    resync_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_events: Mapped[int] = mapped_column(BigInteger, default=0)
+    new_events: Mapped[int] = mapped_column(BigInteger, default=0)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer)
+    notes: Mapped[str | None] = mapped_column(Text)

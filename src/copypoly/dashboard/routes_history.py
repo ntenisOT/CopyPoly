@@ -12,7 +12,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from copypoly.db.models import CrawlProgress, TradeHistory
+from copypoly.db.models import CrawlProgress, CrawlRun, TradeHistory
 from copypoly.db.session import async_session_factory
 from copypoly.logging import get_logger
 
@@ -192,3 +192,33 @@ async def get_history_stats() -> dict:
         "by_type": {t: c for t, c in type_counts},
         "estimated_size_mb": round(total * 400 / 1024 / 1024, 1),
     }
+
+
+@router.get("/crawl/runs")
+async def get_crawl_runs() -> list[dict]:
+    """Get the last 20 crawl run summaries."""
+    async with async_session_factory() as session:
+        runs = (await session.execute(
+            select(CrawlRun)
+            .order_by(CrawlRun.id.desc())
+            .limit(20)
+        )).scalars().all()
+
+    return [
+        {
+            "id": r.id,
+            "started_at": r.started_at.isoformat() if r.started_at else None,
+            "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+            "mode": r.mode,
+            "total_traders": r.total_traders,
+            "ok": r.ok_count,
+            "warn": r.warn_count,
+            "errors": r.error_count,
+            "resynced": r.resync_count,
+            "total_events": r.total_events,
+            "new_events": r.new_events,
+            "duration_seconds": r.duration_seconds,
+            "notes": r.notes,
+        }
+        for r in runs
+    ]
