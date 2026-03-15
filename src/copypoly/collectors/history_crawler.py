@@ -1218,7 +1218,7 @@ async def _crawl_worker(
 
 async def crawl_all_history(
     top_n: int = 9999,
-    skip_complete: bool = True,
+    skip_complete: bool = False,
     max_workers: int = 20,
     delta_threshold: float = 0.001,
     live_stats: dict | None = None,
