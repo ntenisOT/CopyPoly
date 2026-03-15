@@ -875,6 +875,7 @@ async def _crawl_worker(
     client: httpx.AsyncClient,
     stats: dict,
     stats_lock: asyncio.Lock,
+    delta_threshold: float = 100,
 ) -> None:
     """Worker that crawls one trader with semaphore-controlled concurrency."""
     name = username or wallet[:10]
@@ -897,13 +898,13 @@ async def _crawl_worker(
             sane = verification.get("sane", False)
 
             # ── Auto-resync if verification fails with significant delta ──
-            DELTA_THRESHOLD = 100  # $100 tolerance
             MAX_RESYNC = 3
             resync_attempts = 0
 
             while (
                 not sane
-                and abs(verification.get("pnl_delta", 0)) > DELTA_THRESHOLD
+                and delta_threshold > 0
+                and abs(verification.get("pnl_delta", 0)) > delta_threshold
                 and resync_attempts < MAX_RESYNC
             ):
                 resync_attempts += 1
@@ -993,6 +994,7 @@ async def crawl_all_history(
     top_n: int = 9999,
     skip_complete: bool = True,
     max_workers: int = 20,
+    delta_threshold: float = 100,
 ) -> dict[str, Any]:
     """Crawl trade history for the top N traders via subgraph.
 
@@ -1052,6 +1054,7 @@ async def crawl_all_history(
                 client=client,
                 stats=stats,
                 stats_lock=stats_lock,
+                delta_threshold=delta_threshold,
             )
             for i, (wallet, username) in enumerate(traders)
         ]
@@ -1099,6 +1102,7 @@ async def crawl_all_history(
                     client=client,
                     stats=stats,
                     stats_lock=stats_lock,
+                    delta_threshold=delta_threshold,
                 )
                 for i, (w, u) in enumerate(retry_traders)
             ]

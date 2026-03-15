@@ -35,6 +35,9 @@
             <li><a href="#" class="nav-link" data-page="backtest" id="nav-backtest">
                 <span class="nav-icon">🔬</span> Backtest
             </a></li>
+            <li><a href="#" class="nav-link" data-page="crawl-runs" id="nav-crawl-runs">
+                <span class="nav-icon">🔄</span> Crawl Runs
+            </a></li>
             <li><a href="#" class="nav-link" data-page="config" id="nav-config">
                 <span class="nav-icon">⚙️</span> Settings
             </a></li>
@@ -300,7 +303,36 @@
             </div>
         </section>
 
-        <!-- Config Page -->
+        <!-- Crawl Runs Page -->
+        <section class="page" id="page-crawl-runs">
+            <div class="page-header">
+                <h1>Crawl Run History</h1>
+                <div class="header-actions">
+                    <button class="btn btn-sm btn-secondary" onclick="loadCrawlRuns()" id="btn-refresh-runs">↻ Refresh</button>
+                </div>
+            </div>
+            <div class="table-container">
+                <table class="data-table" id="crawl-runs-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Started</th>
+                            <th>Duration</th>
+                            <th>Mode</th>
+                            <th>Traders</th>
+                            <th>✅ OK</th>
+                            <th>⚠️ WARN</th>
+                            <th>❌ ERR</th>
+                            <th>🔄 Resync</th>
+                            <th>New Events</th>
+                            <th>Notes</th>
+                        </tr>
+                    </thead>
+                    <tbody id="crawl-runs-tbody"></tbody>
+                </table>
+            </div>
+        </section>
+
         <section class="page" id="page-config">
             <div class="page-header">
                 <h1>Configuration</h1>

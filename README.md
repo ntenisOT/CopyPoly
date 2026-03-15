@@ -55,13 +55,26 @@ curl -X POST http://localhost:8000/api/crawl \
 # Step 4: Monitor progress
 curl http://localhost:8000/api/crawl/progress
 
-# To update existing data (fetches only new trades since last crawl)
+# Update existing data (fetches only new trades since last crawl)
 curl -X POST http://localhost:8000/api/crawl
 
-# To wipe everything and re-crawl from scratch
+# Custom delta threshold (auto-resync traders with PnL delta > $500)
+curl -X POST http://localhost:8000/api/crawl \
+  -H "Content-Type: application/json" \
+  -d '{"delta_threshold": 500}'
+
+# Disable auto-resync (set threshold to 0)
+curl -X POST http://localhost:8000/api/crawl \
+  -H "Content-Type: application/json" \
+  -d '{"delta_threshold": 0}'
+
+# Wipe everything and re-crawl from scratch (DESTRUCTIVE)
 curl -X POST http://localhost:8000/api/crawl \
   -H "Content-Type: application/json" \
   -d '{"mode": "resync"}'
+
+# View crawl run history
+curl http://localhost:8000/api/crawl/runs
 ```
 
 ---
@@ -144,6 +157,7 @@ copypoly/
 | `POST` | `/api/crawl` | Crawl/update trade history (incremental by default) |
 | `POST` | `/api/crawl` `{"mode":"resync"}` | Wipe DB + full re-crawl from scratch |
 | `GET` | `/api/crawl/progress` | Monitor crawl progress (real-time) |
+| `GET` | `/api/crawl/runs` | Crawl run history with verification summaries |
 | `GET` | `/api/overview` | Dashboard summary stats |
 | `GET` | `/api/traders` | List scored traders with rankings |
 | `GET` | `/api/positions` | Current positions across watched traders |

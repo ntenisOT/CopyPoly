@@ -23,15 +23,18 @@ router = APIRouter(prefix="/api", tags=["history"])
 
 class CrawlRequest(BaseModel):
     top_n: int = 9999
-    mode: str = "crawl"       # "crawl" = incremental, "resync" = wipe DB + full re-crawl
+    mode: str = "crawl"            # "crawl" = incremental, "resync" = wipe DB + full re-crawl
     max_workers: int = 20
+    delta_threshold: float = 100   # $ tolerance for auto-resync (0 = disable auto-resync)
 
 
 # Background crawl task reference
 _crawl_task: asyncio.Task | None = None
 
 
-async def _run_crawl_background(top_n: int, mode: str, max_workers: int = 20):
+async def _run_crawl_background(
+    top_n: int, mode: str, max_workers: int = 20, delta_threshold: float = 100
+):
     """Run the crawl in background (not blocking the API response)."""
     from copypoly.collectors.history_crawler import crawl_all_history
 
@@ -47,7 +50,12 @@ async def _run_crawl_background(top_n: int, mode: str, max_workers: int = 20):
         # Always incremental: skip_complete=False so everyone gets crawled,
         # but resume_ts from newest_timestamp means only new data is fetched.
         # After resync, newest_timestamp is NULL so it fetches everything.
-        await crawl_all_history(top_n=top_n, skip_complete=False, max_workers=max_workers)
+        await crawl_all_history(
+            top_n=top_n,
+            skip_complete=False,
+            max_workers=max_workers,
+            delta_threshold=delta_threshold,
+        )
     except Exception as e:
         log.error("background_crawl_failed", error=str(e))
 
@@ -67,7 +75,7 @@ async def trigger_crawl(body: CrawlRequest) -> dict:
         return {"status": "already_running", "message": "Crawl is already in progress"}
 
     _crawl_task = asyncio.create_task(
-        _run_crawl_background(body.top_n, body.mode, body.max_workers)
+        _run_crawl_background(body.top_n, body.mode, body.max_workers, body.delta_threshold)
     )
 
     return {
@@ -75,6 +83,7 @@ async def trigger_crawl(body: CrawlRequest) -> dict:
         "source": "subgraph",
         "top_n": body.top_n,
         "mode": body.mode,
+        "delta_threshold": body.delta_threshold,
     }
 
 

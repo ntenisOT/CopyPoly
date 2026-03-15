@@ -32,6 +32,7 @@ function navigateTo(page) {
         case 'signals': loadSignals(); break;
         case 'performance': loadPerformance(); break;
         case 'config': loadConfig(); break;
+        case 'crawl-runs': loadCrawlRuns(); break;
     }
 }
 
@@ -350,6 +351,49 @@ function showToast(message, type = 'info') {
     toast.textContent = message;
     container.appendChild(toast);
     setTimeout(() => toast.remove(), 3000);
+}
+
+// ============================================================
+// Crawl Runs Page
+// ============================================================
+async function loadCrawlRuns() {
+    try {
+        const runs = await apiFetch('/crawl/runs');
+        const tbody = document.getElementById('crawl-runs-tbody');
+        tbody.innerHTML = runs.map(r => {
+            const dur = r.duration_seconds
+                ? (r.duration_seconds > 3600
+                    ? `${(r.duration_seconds/3600).toFixed(1)}h`
+                    : `${Math.round(r.duration_seconds/60)}m`)
+                : '—';
+            const started = r.started_at
+                ? new Date(r.started_at).toLocaleString()
+                : '—';
+            const newEvt = r.new_events
+                ? r.new_events.toLocaleString()
+                : '0';
+            const modeClass = r.mode === 'resync' ? 'text-warning' : '';
+            return `<tr>
+                <td>${r.id}</td>
+                <td>${started}</td>
+                <td>${dur}</td>
+                <td class="${modeClass}">${r.mode}</td>
+                <td>${r.total_traders}</td>
+                <td class="text-positive">${r.ok}</td>
+                <td class="text-warning">${r.warn}</td>
+                <td class="text-negative">${r.errors}</td>
+                <td>${r.resynced}</td>
+                <td>${newEvt}</td>
+                <td class="text-muted" style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${r.notes || '—'}</td>
+            </tr>`;
+        }).join('');
+
+        if (runs.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;opacity:0.5">No runs recorded yet</td></tr>';
+        }
+    } catch (err) {
+        console.error('Failed to load crawl runs', err);
+    }
 }
 
 // ============================================================
