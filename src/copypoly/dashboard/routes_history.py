@@ -127,6 +127,23 @@ async def get_crawl_progress() -> dict:
             select(func.sum(CrawlProgress.activities_crawled))
         )).scalar() or 0
 
+        # Actual DB totals
+        traders_with_data = (await session.execute(
+            select(func.count(func.distinct(TradeHistory.trader_wallet)))
+        )).scalar() or 0
+
+        oldest_event = (await session.execute(
+            select(func.min(TradeHistory.timestamp))
+        )).scalar()
+
+        newest_event = (await session.execute(
+            select(func.max(TradeHistory.timestamp))
+        )).scalar()
+
+        db_size = (await session.execute(
+            select(func.pg_database_size(func.current_database()))
+        )).scalar() or 0
+
         recent = (await session.execute(
             select(CrawlProgress)
             .order_by(CrawlProgress.completed_at.desc().nulls_last())
@@ -147,6 +164,13 @@ async def get_crawl_progress() -> dict:
         "total_activities_crawled": total_crawled,
         "total_activities_stored": total_activities,
         "progress_pct": round((complete / denominator) * 100, 1) if denominator > 0 else 0,
+        "db": {
+            "total_events": total_activities,
+            "traders_with_data": traders_with_data,
+            "oldest_event": oldest_event.isoformat() if oldest_event else None,
+            "newest_event": newest_event.isoformat() if newest_event else None,
+            "size_mb": round(db_size / 1024 / 1024, 1),
+        },
         "recent": [
             {
                 "wallet": p.trader_wallet[:10] + "...",

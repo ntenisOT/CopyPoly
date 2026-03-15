@@ -22,9 +22,10 @@ services:
       - ./data/pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U copypoly -d copypoly"]
-      interval: 5s
+      interval: 3s
       timeout: 3s
       retries: 30
+      start_period: 10s
     restart: unless-stopped
     command: >
       postgres
@@ -32,6 +33,7 @@ services:
       -c effective_cache_size=22GB
       -c work_mem=64MB
       -c maintenance_work_mem=1GB
+      -c max_connections=300
     deploy:
       resources:
         limits:
