@@ -11,6 +11,7 @@ import asyncio
 from fastapi import APIRouter
 from pydantic import BaseModel
 from sqlalchemy import func, select
+import sqlalchemy as sa
 
 from copypoly.db.models import CrawlProgress, CrawlRun, TradeHistory
 from copypoly.db.session import async_session_factory
@@ -38,23 +39,23 @@ async def _run_crawl_background(
     """Run the crawl in background (not blocking the API response)."""
     from copypoly.collectors.history_crawler import crawl_all_history
 
+    # Reset in-memory stats
+    _crawl_stats.clear()
+
     try:
         if mode == "resync":
-            # Wipe all trade data and crawl progress
             async with async_session_factory() as session:
                 await session.execute(TradeHistory.__table__.delete())
                 await session.execute(CrawlProgress.__table__.delete())
                 await session.commit()
             log.info("resync_wiped_db")
 
-        # Always incremental: skip_complete=False so everyone gets crawled,
-        # but resume_ts from newest_timestamp means only new data is fetched.
-        # After resync, newest_timestamp is NULL so it fetches everything.
         await crawl_all_history(
             top_n=top_n,
             skip_complete=False,
             max_workers=max_workers,
             delta_threshold=delta_threshold,
+            live_stats=_crawl_stats,
         )
     except Exception as e:
         log.error("background_crawl_failed", error=str(e))
@@ -87,101 +88,36 @@ async def trigger_crawl(body: CrawlRequest) -> dict:
     }
 
 
+# In-memory crawl stats — updated by the crawler, read by the progress endpoint.
+# Zero DB queries needed for progress checks.
+_crawl_stats: dict = {}
+
+
 @router.get("/crawl/progress")
 async def get_crawl_progress() -> dict:
-    """Get current crawl progress across all traders."""
-    from copypoly.db.models import Trader
-
-    async with async_session_factory() as session:
-        # Total scored traders (the denominator for progress)
-        total_scored = (await session.execute(
-            select(func.count()).select_from(Trader)
-            .where(Trader.composite_score > 0)
-        )).scalar() or 0
-
-        # Crawl progress stats
-        processed = (await session.execute(
-            select(func.count()).select_from(CrawlProgress)
-        )).scalar() or 0
-
-        complete = (await session.execute(
-            select(func.count()).select_from(CrawlProgress)
-            .where(CrawlProgress.status == "COMPLETE")
-        )).scalar() or 0
-
-        running = (await session.execute(
-            select(func.count()).select_from(CrawlProgress)
-            .where(CrawlProgress.status == "RUNNING")
-        )).scalar() or 0
-
-        errors = (await session.execute(
-            select(func.count()).select_from(CrawlProgress)
-            .where(CrawlProgress.status == "ERROR")
-        )).scalar() or 0
-
-        total_activities = (await session.execute(
-            select(func.count()).select_from(TradeHistory)
-        )).scalar() or 0
-
-        total_crawled = (await session.execute(
-            select(func.sum(CrawlProgress.activities_crawled))
-        )).scalar() or 0
-
-        # Actual DB totals
-        traders_with_data = (await session.execute(
-            select(func.count(func.distinct(TradeHistory.trader_wallet)))
-        )).scalar() or 0
-
-        oldest_event = (await session.execute(
-            select(func.min(TradeHistory.timestamp))
-        )).scalar()
-
-        newest_event = (await session.execute(
-            select(func.max(TradeHistory.timestamp))
-        )).scalar()
-
-        db_size = (await session.execute(
-            select(func.pg_database_size(func.current_database()))
-        )).scalar() or 0
-
-        recent = (await session.execute(
-            select(CrawlProgress)
-            .order_by(CrawlProgress.completed_at.desc().nulls_last())
-            .limit(10)
-        )).scalars().all()
-
+    """Get current crawl progress — pure in-memory, no DB queries."""
     is_running = _crawl_task is not None and not _crawl_task.done()
-    denominator = total_scored if total_scored > 0 else processed
+    s = _crawl_stats
+
+    total = s.get("total_traders", 0)
+    completed = s.get("completed", 0)
+    failed = s.get("failed", 0)
+    running = total - completed - failed if total > 0 else 0
 
     return {
         "is_running": is_running,
         "source": "subgraph",
-        "total_traders": total_scored,
-        "processed": processed,
-        "complete": complete,
-        "running": running,
-        "errors": errors,
-        "total_activities_crawled": total_crawled,
-        "total_activities_stored": total_activities,
-        "progress_pct": round((complete / denominator) * 100, 1) if denominator > 0 else 0,
-        "db": {
-            "total_events": total_activities,
-            "traders_with_data": traders_with_data,
-            "oldest_event": oldest_event.isoformat() if oldest_event else None,
-            "newest_event": newest_event.isoformat() if newest_event else None,
-            "size_mb": round(db_size / 1024 / 1024, 1),
-        },
-        "recent": [
-            {
-                "wallet": p.trader_wallet[:10] + "...",
-                "status": p.status,
-                "activities": p.activities_crawled,
-                "completed_at": p.completed_at.isoformat() if p.completed_at else None,
-                "notes": p.error_message if p.status == "COMPLETE" else None,
-                "error": p.error_message[:80] if p.error_message and p.status == "ERROR" else None,
-            }
-            for p in recent
-        ],
+        "total_traders": total,
+        "processed": completed + failed,
+        "complete": completed,
+        "running": max(0, running),
+        "errors": failed,
+        "ok": s.get("ok", 0),
+        "warn": s.get("warn", 0),
+        "resynced": s.get("resynced", 0),
+        "total_activities_crawled": s.get("total_activities", 0),
+        "total_activities_stored": s.get("total_inserted", 0),
+        "progress_pct": round((completed / total) * 100, 1) if total > 0 else 0,
     }
 
 

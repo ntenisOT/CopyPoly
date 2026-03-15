@@ -123,23 +123,20 @@ async def _store_batch(rows: list[dict]) -> int:
         return result.rowcount
 
 
-async def _crawl_and_store_side(
+async def _crawl_side(
     wallet: str,
     side: str,
     client: httpx.AsyncClient,
     trader_name: str,
     resume_from_ts: int = 0,
-) -> dict[str, int]:
-    """Crawl one side (maker/taker) and store PAGE BY PAGE.
+) -> list[dict]:
+    """Crawl one side (maker/taker) and return all parsed rows in memory.
 
-    If resume_from_ts > 0, only fetches events with timestamp >= that value.
-    Dedup on insert handles overlap at the boundary.
-    Returns dict with total_fetched, total_inserted, pages.
+    No DB interaction — all events are collected in a list.
     """
     wallet_lower = wallet.lower()
     last_id = ""
-    total_fetched = 0
-    total_inserted = 0
+    all_rows: list[dict] = []
     page = 0
     ts_filter = f', timestamp_gte: {resume_from_ts}' if resume_from_ts > 0 else ""
     if resume_from_ts > 0:
@@ -163,7 +160,6 @@ async def _crawl_and_store_side(
     takerAmountFilled
   }}
 }}"""
-        # Retry on errors (up to 3 times)
         events = None
         for attempt in range(3):
             try:
@@ -189,25 +185,18 @@ async def _crawl_and_store_side(
         if events is None or not events:
             break
 
-        # Parse and store THIS page immediately
         rows = [_parse_event(e, wallet) for e in events]
-        inserted = await _store_batch(rows)
-
-        total_fetched += len(events)
-        total_inserted += inserted
+        all_rows.extend(rows)
         page += 1
         last_id = events[-1]["id"]
 
-        # Log every page for visibility
         log.info(
-            "page_stored",
+            "page_fetched",
             trader=trader_name,
             side=side,
             page=page,
             fetched=len(events),
-            inserted=inserted,
-            total_fetched=total_fetched,
-            total_inserted=total_inserted,
+            total=len(all_rows),
         )
 
         if len(events) < PAGE_SIZE:
@@ -215,11 +204,7 @@ async def _crawl_and_store_side(
 
         await asyncio.sleep(INTER_PAGE_DELAY)
 
-    return {
-        "fetched": total_fetched,
-        "inserted": total_inserted,
-        "pages": page,
-    }
+    return all_rows
 
 
 async def crawl_trader_history(
@@ -252,7 +237,6 @@ async def crawl_trader_history(
 
     try:
         # Get resume timestamp from DB (for incremental updates)
-        # Subtract 5 days as safety buffer; dedup handles overlap
         resume_ts = 0
         try:
             async with async_session_factory() as session:
@@ -269,33 +253,31 @@ async def crawl_trader_history(
         except Exception:
             pass  # Fresh crawl if DB query fails
 
-        # 1. Crawl maker side from subgraph (store page-by-page)
+        # 1. Collect maker side in memory (no DB)
         log.info("crawling_side", trader=name, side="maker")
-        maker_stats = await _crawl_and_store_side(wallet, "maker", client, name, resume_ts)
+        maker_rows = await _crawl_side(wallet, "maker", client, name, resume_ts)
 
-        # 2. Crawl taker side from subgraph (store page-by-page)
+        # 2. Collect taker side in memory (no DB)
         log.info("crawling_side", trader=name, side="taker")
-        taker_stats = await _crawl_and_store_side(wallet, "taker", client, name, resume_ts)
+        taker_rows = await _crawl_side(wallet, "taker", client, name, resume_ts)
 
-        # 3. Crawl activity data (MERGE, SPLIT, REDEEM)
-        # Redeems are always re-fetched per-condition (few events, dedup safe)
+        # 3. Crawl activity data (merges, splits, redeems)
         log.info("crawling_activity", trader=name)
         activity_stats = await _crawl_activity_data(wallet, client, name, resume_ts)
 
-        total_fetched = (
-            maker_stats["fetched"] + taker_stats["fetched"]
-            + activity_stats["fetched"]
-        )
-        total_inserted = (
-            maker_stats["inserted"] + taker_stats["inserted"]
-            + activity_stats["inserted"]
-        )
+        # 4. SINGLE bulk insert of all trade rows
+        all_rows = maker_rows + taker_rows
+        total_fetched = len(all_rows) + activity_stats["fetched"]
+        total_inserted = 0
+        if all_rows:
+            total_inserted = await _store_batch(all_rows)
+        total_inserted += activity_stats["inserted"]
 
         log.info(
             "trader_crawl_complete",
             trader=name,
-            maker=maker_stats["fetched"],
-            taker=taker_stats["fetched"],
+            maker=len(maker_rows),
+            taker=len(taker_rows),
             activity=activity_stats["fetched"],
             total_inserted=total_inserted,
         )
@@ -998,6 +980,7 @@ async def crawl_all_history(
     skip_complete: bool = True,
     max_workers: int = 20,
     delta_threshold: float = 0.001,
+    live_stats: dict | None = None,
 ) -> dict[str, Any]:
     """Crawl trade history for the top N traders via subgraph.
 
@@ -1007,6 +990,7 @@ async def crawl_all_history(
         top_n: Number of top traders to crawl
         skip_complete: Skip traders already marked COMPLETE
         max_workers: Number of parallel crawl workers (default: 10)
+        live_stats: Optional dict to update with real-time progress (for API)
     """
     async with async_session_factory() as session:
         result = await session.execute(
@@ -1042,6 +1026,10 @@ async def crawl_all_history(
         "total_activities": 0,
         "total_inserted": 0,
     }
+    # If live_stats provided, update it so the API can read it
+    if live_stats is not None:
+        live_stats.update(stats)
+        stats = live_stats
     stats_lock = asyncio.Lock()
     semaphore = asyncio.Semaphore(max_workers)
 

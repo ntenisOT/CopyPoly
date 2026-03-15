@@ -12,13 +12,17 @@ from sqlalchemy.ext.asyncio import (
 
 from copypoly.config import settings
 
-# Create the async engine
+# QueuePool manages persistent connections to PgBouncer.
+# PgBouncer then multiplexes into a smaller set of real PG connections.
+# statement_cache_size=0 is REQUIRED for PgBouncer transaction mode
+# (asyncpg prepared statements break when server connection changes).
 engine = create_async_engine(
     settings.database_url,
     echo=False,
-    pool_size=50,
-    max_overflow=150,
-    pool_pre_ping=True,  # Verify connections before using them
+    pool_size=500,
+    max_overflow=1000,
+    pool_pre_ping=True,
+    connect_args={"statement_cache_size": 0},
 )
 
 # Session factory

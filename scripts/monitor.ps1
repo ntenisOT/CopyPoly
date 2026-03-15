@@ -42,8 +42,12 @@ while ($true) {
     Write-Host ""
 
     # Data
+    $crawledK = [math]::Round($p.total_activities_crawled / 1000, 1)
     $storedK = [math]::Round($p.total_activities_stored / 1000, 1)
-    Write-Host "  Events:      ${storedK}K stored"
+    $okCount = $p.ok
+    $warnCount = $p.warn
+    Write-Host "  Crawled:     ${crawledK}K events | ${storedK}K inserted"
+    Write-Host "  Quality:     " -NoNewline; Write-Host "${okCount} OK" -ForegroundColor Green -NoNewline; Write-Host " | " -NoNewline; Write-Host "${warnCount} WARN" -ForegroundColor Yellow
 
     # Progress bar
     $pct = if ($total -gt 0) { [math]::Round(($done / $total) * 100, 1) } else { 0 }
