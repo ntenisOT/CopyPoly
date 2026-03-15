@@ -411,14 +411,21 @@ class TradeHistory(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     condition_id: Mapped[str | None] = mapped_column(String(100))
     trade_type: Mapped[str] = mapped_column(String(20), nullable=False)  # TRADE, SPLIT, MERGE, REDEEM
-    side: Mapped[str | None] = mapped_column(String(10))  # MAKER, TAKER, BUY, SELL
+    side: Mapped[str | None] = mapped_column(String(10))  # BUY, SELL, MERGE, SPLIT, REDEEM
     size: Mapped[float | None] = mapped_column(Numeric(20, 6))
     usdc_size: Mapped[float | None] = mapped_column(Numeric(20, 6))
     price: Mapped[float | None] = mapped_column(Numeric(10, 6))
     asset: Mapped[str | None] = mapped_column(Text)  # Subgraph asset IDs can be very long
     outcome_index: Mapped[int | None] = mapped_column(Integer)
-    outcome: Mapped[str | None] = mapped_column(String(50))
-    transaction_hash: Mapped[str | None] = mapped_column(String(200))  # Subgraph: txHash_orderHash
+    outcome: Mapped[str | None] = mapped_column(String(50))  # MAKER/TAKER for TRADE events
+    transaction_hash: Mapped[str | None] = mapped_column(String(200))  # Subgraph event ID
+
+    # Raw subgraph integers for exact PnL calculation (no float precision loss)
+    # TRADE: base_amount = shares (scaled 1e6), quote_amount = USDC (scaled 1e6)
+    # MERGE/SPLIT: base_amount = raw amount from subgraph
+    # REDEEM: base_amount = raw payout from subgraph
+    base_amount: Mapped[int | None] = mapped_column(BigInteger)
+    quote_amount: Mapped[int | None] = mapped_column(BigInteger)
 
     # Denormalized market info (from API response, for quick display)
     market_title: Mapped[str | None] = mapped_column(Text)

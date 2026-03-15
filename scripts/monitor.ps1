@@ -31,7 +31,7 @@ while ($true) {
     $done = $p.complete
     $running = $p.running
     $errors = $p.errors
-    $total = $p.processed
+    $total = $p.total_traders
     $remaining = $total - $done - $errors
 
     Write-Host "  Complete:    " -NoNewline; Write-Host "$done" -ForegroundColor Green -NoNewline; Write-Host " / $total traders"
@@ -44,9 +44,10 @@ while ($true) {
     # Data
     $crawledK = [math]::Round($p.total_activities_crawled / 1000, 1)
     $storedK = [math]::Round($p.total_activities_stored / 1000, 1)
+    $dbSizeMB = [math]::Round($p.total_activities_stored * 1.3 / 1024, 1)  # ~1.3KB per event
     $okCount = $p.ok
     $warnCount = $p.warn
-    Write-Host "  Crawled:     ${crawledK}K events | ${storedK}K inserted"
+    Write-Host "  Crawled:     ${crawledK}K events | ${storedK}K in DB (~${dbSizeMB} MB)"
     Write-Host "  Quality:     " -NoNewline; Write-Host "${okCount} OK" -ForegroundColor Green -NoNewline; Write-Host " | " -NoNewline; Write-Host "${warnCount} WARN" -ForegroundColor Yellow
 
     # Progress bar

@@ -83,12 +83,16 @@ def _parse_event(event: dict, wallet: str) -> dict:
         asset = their_asset
         usdc_size = my_amount / 1e6
         size = their_amount / 1e6
+        base_raw = their_amount   # shares
+        quote_raw = my_amount     # USDC
     else:
         # We gave tokens, received USDC -> This is a SELL of tokens
         side = "SELL"
         asset = my_asset
         size = my_amount / 1e6
         usdc_size = their_amount / 1e6
+        base_raw = my_amount      # shares
+        quote_raw = their_amount  # USDC
 
     price = usdc_size / size if size > 0 else None
 
@@ -104,23 +108,34 @@ def _parse_event(event: dict, wallet: str) -> dict:
         "price": price,
         "asset": asset,
         "outcome_index": None,
-        "outcome": None,
+        "outcome": "MAKER" if is_maker else "TAKER",
         "transaction_hash": event["id"],
+        "base_amount": base_raw,
+        "quote_amount": quote_raw,
         "market_title": None,
         "market_slug": None,
     }
 
 
 async def _store_batch(rows: list[dict]) -> int:
-    """Store a batch of parsed events. Returns number of new rows inserted."""
+    """Store a batch of parsed events. Returns number of new rows inserted.
+
+    Chunks large batches to stay under asyncpg's 32767 parameter limit.
+    With 14 columns per row, max ~2000 rows per INSERT.
+    """
     if not rows:
         return 0
+    CHUNK_SIZE = 1500  # 16 columns × 1500 = 24000 params (under 32767)
+    total_inserted = 0
     async with async_session_factory() as session:
-        stmt = pg_insert(TradeHistory).values(rows)
-        stmt = stmt.on_conflict_do_nothing(constraint="uq_trade_history_tx")
-        result = await session.execute(stmt)
+        for i in range(0, len(rows), CHUNK_SIZE):
+            chunk = rows[i:i + CHUNK_SIZE]
+            stmt = pg_insert(TradeHistory).values(chunk)
+            stmt = stmt.on_conflict_do_nothing(constraint="uq_trade_history_tx")
+            result = await session.execute(stmt)
+            total_inserted += result.rowcount
         await session.commit()
-        return result.rowcount
+    return total_inserted
 
 
 async def _crawl_side(
@@ -382,19 +397,22 @@ async def _crawl_activity_data(
         rows = []
         for m in data:
             ts = datetime.fromtimestamp(int(m["timestamp"]), tz=timezone.utc)
+            raw_amount = int(m["amount"])
             rows.append({
                 "trader_wallet": wallet_lower,
                 "timestamp": ts,
                 "condition_id": m["condition"],
                 "trade_type": "MERGE",
                 "side": "MERGE",
-                "size": int(m["amount"]) / 1e6,
-                "usdc_size": int(m["amount"]) / 1e6,
-                "price": 0.5,  # Merge = sell at $0.50
-                "asset": m["condition"],  # Use condition as asset for merges
+                "size": raw_amount / 1e6,
+                "usdc_size": raw_amount / 1e6,
+                "price": 0.5,
+                "asset": m["condition"],
                 "outcome_index": None,
                 "outcome": None,
                 "transaction_hash": m["id"],
+                "base_amount": raw_amount,
+                "quote_amount": raw_amount,
                 "market_title": None,
                 "market_slug": None,
             })
@@ -438,19 +456,22 @@ async def _crawl_activity_data(
         rows = []
         for s in data:
             ts = datetime.fromtimestamp(int(s["timestamp"]), tz=timezone.utc)
+            raw_amount = int(s["amount"])
             rows.append({
                 "trader_wallet": wallet_lower,
                 "timestamp": ts,
                 "condition_id": s["condition"],
                 "trade_type": "SPLIT",
                 "side": "SPLIT",
-                "size": int(s["amount"]) / 1e6,
-                "usdc_size": int(s["amount"]) / 1e6,
-                "price": 0.5,  # Split = buy at $0.50
+                "size": raw_amount / 1e6,
+                "usdc_size": raw_amount / 1e6,
+                "price": 0.5,
                 "asset": s["condition"],
                 "outcome_index": None,
                 "outcome": None,
                 "transaction_hash": s["id"],
+                "base_amount": raw_amount,
+                "quote_amount": raw_amount,
                 "market_title": None,
                 "market_slug": None,
             })
@@ -528,19 +549,22 @@ async def _crawl_activity_data(
             rows = []
             for rd in redeem_data:
                 ts = datetime.fromtimestamp(int(rd["timestamp"]), tz=timezone.utc)
+                raw_payout = int(rd["payout"])
                 rows.append({
                     "trader_wallet": wallet_lower,
                     "timestamp": ts,
                     "condition_id": rd["condition"],
                     "trade_type": "REDEEM",
                     "side": "REDEEM",
-                    "size": int(rd["payout"]) / 1e6,
-                    "usdc_size": int(rd["payout"]) / 1e6,
+                    "size": raw_payout / 1e6,
+                    "usdc_size": raw_payout / 1e6,
                     "price": 1.0,
                     "asset": rd["condition"],
                     "outcome_index": None,
                     "outcome": None,
                     "transaction_hash": rd["id"],
+                    "base_amount": raw_payout,
+                    "quote_amount": raw_payout,
                     "market_title": None,
                     "market_slug": None,
                 })
@@ -582,19 +606,22 @@ async def _crawl_activity_data(
         rows = []
         for c in data:
             ts = datetime.fromtimestamp(int(c["timestamp"]), tz=timezone.utc)
+            raw_amount = int(c["amount"])
             rows.append({
                 "trader_wallet": wallet_lower,
                 "timestamp": ts,
                 "condition_id": c["condition"],
                 "trade_type": "CONVERSION",
                 "side": "CONVERSION",
-                "size": int(c["amount"]) / 1e6,
-                "usdc_size": int(c["amount"]) / 1e6,
+                "size": raw_amount / 1e6,
+                "usdc_size": raw_amount / 1e6,
                 "price": 0.0,
                 "asset": c["condition"],
                 "outcome_index": None,
                 "outcome": None,
                 "transaction_hash": c["id"],
+                "base_amount": raw_amount,
+                "quote_amount": raw_amount,
                 "market_title": None,
                 "market_slug": None,
             })
@@ -797,6 +824,17 @@ async def _verify_trader(wallet: str, name: str, crawl_result: dict) -> dict:
                     res_price = int(cur_price * COLLATERAL_SCALE)
                     tracker.sell(res_price, tracker.amount)
 
+        log.info(
+            "sg_verify_stats",
+            trader=name,
+            fills=len(fills),
+            merges=len(merges),
+            splits=len(splits),
+            redeems=len(redeems),
+            conditions_mapped=len(cond_to_assets),
+            trackers=len(trackers),
+        )
+
         # 6. Compare to PM
         matches = 0
         total = 0
@@ -847,6 +885,183 @@ async def _verify_trader(wallet: str, name: str, crawl_result: dict) -> dict:
     return report
 
 
+async def _verify_from_db(
+    wallet: str, name: str,
+    maker_rows: list[dict] | None = None,
+    activity_rows: int = 0,
+    pm_positions: list[dict] | None = None,
+) -> dict:
+    """Calculate PnL from DB data to verify data integrity.
+
+    Reads trade_history from DB, filters TRADE events to MAKER-only
+    (matching the pnl-subgraph algorithm), processes through PositionTracker.
+    Returns db_pnl, db_events for comparison with subgraph PnL.
+    """
+    from collections import defaultdict
+    from copypoly.pnl_calculator import PositionTracker, COLLATERAL_SCALE, FIFTY_CENTS
+
+    wallet_lower = wallet.lower()
+    result = {"db_pnl": 0.0, "db_events": 0, "db_verified": False}
+
+    try:
+        # Extract log_index from event ID for proper ordering
+        def log_idx(tx_hash: str | None) -> int:
+            if not tx_hash:
+                return 0
+            parts = tx_hash.split("_")
+            try:
+                return int(parts[-1], 16) if len(parts) > 1 else 0
+            except ValueError:
+                return 0
+
+        # Read all events from DB for this trader
+        async with async_session_factory() as session:
+            rows = (await session.execute(
+                select(TradeHistory)
+                .where(TradeHistory.trader_wallet == wallet_lower)
+            )).scalars().all()
+
+        result["db_events"] = len(rows)
+        if not rows:
+            result["db_verified"] = True
+            return result
+
+        # Sort by (timestamp, log_index) — same as subgraph verify
+        rows.sort(key=lambda r: (r.timestamp, log_idx(r.transaction_hash)))
+
+        # Get PM positions for asset-condition mapping
+        if pm_positions is None:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(
+                    "https://data-api.polymarket.com/closed-positions",
+                    params={"user": wallet_lower, "limit": 200},
+                    timeout=httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=5.0),
+                )
+                pm_positions = r.json()
+
+        # Build condition -> asset mapping
+        pm_by_asset = {}
+        cond_to_assets = defaultdict(set)
+        for p in pm_positions:
+            pm_by_asset[p["asset"]] = p
+            cond = p.get("conditionId", "")
+            cond_to_assets[cond].add(p["asset"])
+            if p.get("oppositeAsset"):
+                cond_to_assets[cond].add(p["oppositeAsset"])
+
+        # Process through PositionTracker — same logic as subgraph verify
+        # Uses raw integer columns for exact parity with subgraph calculation
+        trackers = {}
+        fill_count = 0
+        merge_count = 0
+        split_count = 0
+        redeem_count = 0
+        merge_mapped = 0
+        null_raw_count = 0
+
+        for row in rows:
+            tt = row.trade_type
+
+            if tt == "TRADE":
+                # Only process MAKER fills (same as subgraph verify)
+                if row.outcome != "MAKER":
+                    continue
+                asset = row.asset
+                if not asset:
+                    continue
+
+                # Use raw integers if available, fall back to float conversion
+                if row.base_amount is not None and row.quote_amount is not None:
+                    base = row.base_amount
+                    quote = row.quote_amount
+                else:
+                    null_raw_count += 1
+                    base = round(float(row.size) * 1e6) if row.size else 0
+                    quote = round(float(row.usdc_size) * 1e6) if row.usdc_size else 0
+
+                if base <= 0:
+                    continue
+                price = quote * COLLATERAL_SCALE // base
+                side = row.side  # BUY or SELL
+                if asset not in trackers:
+                    trackers[asset] = PositionTracker(asset)
+                if side == "BUY":
+                    trackers[asset].buy(price, base)
+                else:
+                    trackers[asset].sell(price, base)
+                fill_count += 1
+
+            elif tt == "MERGE":
+                cond = row.condition_id
+                if row.base_amount is not None:
+                    amount = row.base_amount
+                else:
+                    null_raw_count += 1
+                    amount = round(float(row.size) * 1e6) if row.size else 0
+                mapped_assets = cond_to_assets.get(cond, set())
+                merge_count += 1
+                if mapped_assets:
+                    merge_mapped += 1
+                for asset in mapped_assets:
+                    if asset not in trackers:
+                        trackers[asset] = PositionTracker(asset)
+                    trackers[asset].sell(FIFTY_CENTS, amount)
+
+            elif tt == "SPLIT":
+                cond = row.condition_id
+                if row.base_amount is not None:
+                    amount = row.base_amount
+                else:
+                    null_raw_count += 1
+                    amount = round(float(row.size) * 1e6) if row.size else 0
+                for asset in cond_to_assets.get(cond, set()):
+                    if asset not in trackers:
+                        trackers[asset] = PositionTracker(asset)
+                    trackers[asset].buy(FIFTY_CENTS, amount)
+                split_count += 1
+
+            elif tt == "REDEEM":
+                cond = row.condition_id
+                for asset in cond_to_assets.get(cond, set()):
+                    if asset not in trackers:
+                        continue
+                    tracker = trackers[asset]
+                    pm = pm_by_asset.get(asset, {})
+                    cur_price = pm.get("curPrice", 0)
+                    res_price = int(cur_price * COLLATERAL_SCALE)
+                    tracker.sell(res_price, tracker.amount)
+                redeem_count += 1
+
+        log.info(
+            "db_verify_stats",
+            trader=name,
+            fills=fill_count,
+            merges=merge_count,
+            merge_mapped=merge_mapped,
+            splits=split_count,
+            redeems=redeem_count,
+            null_raw=null_raw_count,
+            conditions_mapped=len(cond_to_assets),
+            trackers=len(trackers),
+        )
+
+        # Sum PnL only for positions in PM closed-positions
+        # (same as subgraph verify which iterates `for p in all_pos`)
+        total_db_pnl = 0.0
+        for p in pm_positions:
+            asset = p["asset"]
+            tracker = trackers.get(asset)
+            if tracker:
+                total_db_pnl += tracker.realized_pnl_f
+        result["db_pnl"] = round(total_db_pnl, 2)
+        result["db_verified"] = True
+
+    except Exception as e:
+        log.warning("db_verify_failed", trader=name, error=str(e)[:200])
+
+    return result
+
+
 async def _crawl_worker(
     semaphore: asyncio.Semaphore,
     wallet: str,
@@ -875,8 +1090,12 @@ async def _crawl_worker(
         try:
             result = await crawl_trader_history(wallet, client, name)
 
-            # Verify data after crawl
+            # Verify data after crawl (subgraph-based)
             verification = await _verify_trader(wallet, name, result)
+
+            # Verify from DB (reads back stored data)
+            db_verify = await _verify_from_db(wallet, name)
+
             sane = verification.get("sane", False)
 
             # ── Auto-resync if verification fails with significant delta ──
@@ -921,22 +1140,35 @@ async def _crawl_worker(
                 # Re-crawl from scratch and re-verify
                 result = await crawl_trader_history(wallet, client, name)
                 verification = await _verify_trader(wallet, name, result)
+                db_verify = await _verify_from_db(wallet, name)
                 sane = verification.get("sane", False)
 
             # Store verification notes in crawl_progress
             matched = verification.get("positions_matched", "?/?")
-            calc_pnl = verification.get("calc_pnl", 0)
+            sg_pnl = verification.get("calc_pnl", 0)
             pm_pnl = verification.get("pm_pnl", 0)
             lb_pnl = verification.get("leaderboard_pnl", 0)
-            delta = verification.get("pnl_delta", 0)
+            db_pnl = db_verify.get("db_pnl", 0)
+            db_events = db_verify.get("db_events", 0)
+            delta_sg_db = round(sg_pnl - db_pnl, 2)
+            delta_db_pm = round(db_pnl - pm_pnl, 2)
+
+            # sane = subgraph matches PM AND DB matches subgraph
+            db_ok = abs(delta_sg_db) < 1  # Allow $1 rounding
+            sane = sane and db_ok
+
             resync_tag = f" resync={resync_attempts}" if resync_attempts > 0 else ""
+            status = "[OK]" if sane else "[WARN]"
             notes = (
-                f"{'[OK]' if sane else '[WARN]'} "
+                f"{status} "
                 f"matched={matched}, "
-                f"calc=${calc_pnl:,.0f}, "
+                f"sg=${sg_pnl:,.0f}, "
+                f"db=${db_pnl:,.0f}, "
                 f"pm=${pm_pnl:,.0f}, "
                 f"lb=${lb_pnl:,.0f}, "
-                f"delta=${delta:,.0f}"
+                f"Δsg-db=${delta_sg_db:,.0f}, "
+                f"Δdb-pm=${delta_db_pm:,.0f}, "
+                f"rows={db_events}"
                 f"{resync_tag}"
             )
             async with async_session_factory() as session:
@@ -975,7 +1207,7 @@ async def _crawl_worker(
                 fetched=result["fetched"],
                 inserted=result["inserted"],
                 matched=matched,
-                calc_pnl=round(calc_pnl, 0),
+                sg_pnl=round(sg_pnl, 0),
                 resyncs=resync_attempts,
             )
         except Exception as e:
